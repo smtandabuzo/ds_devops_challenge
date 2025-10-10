@@ -14,14 +14,14 @@ The goal of this assessment is to evaluate your practical skills in building and
 
 You have been tasked with containerizing and creating a CI/CD pipeline for a new Python-based microservice. This service is a small component of our larger data analytics platform. It needs to interact with a Minio S3-compatible object storage service. Your mission is to automate the deployment of this stack.
 
-You will need a Linux environment (Ubuntu 20.04+ or similar) with Docker and Docker Compose installed. You'll create bash scripts to automate the deployment process that would normally be handled by a CI/CD tool.
+You will need a Linux environment (Ubuntu 20.04+ or similar) with Docker Community Edition installed. Please do not use any further orchestration tools such as Docker Compose or Kubernetes. You'll create bash scripts to automate the deployment process that would normally be handled by a CI/CD tool.
 
 ## Core Technologies
 
 You will be expected to use the following technologies:
 
-- **Docker & Docker Compose**: For containerization and service orchestration
-- **Bash scripting**: For automation and deployment scripts
+- **Docker** or an equivalent thereof (e.g. Podman): For creating and running containers
+- **Bash scripting**: For automation and deployment scripts. Please stick to the POSIX 1003.1 standard
 - **Minio**: As the S3-compatible object storage solution
 - **Python**: The language of the application
 - **Git**: For version control
@@ -42,17 +42,17 @@ The `resources/` directory contains a simple Python Flask application (`app.py`)
 
 1. Create a `Dockerfile` in the project root for the Python application
 2. The Docker image should be production-ready:
-   - Optimized for size (consider multi-stage builds)
-   - Security-hardened (run as non-root user, minimal base image)
+   - Optimized for size
+   - Security-hardened 
    - Include appropriate health checks
-   - Use gunicorn as the production WSGI server
+   - Use a production WSGI server
 3. Ensure all dependencies from `requirements.txt` are installed correctly
 
 **Challenge Element**: When you examine the application code, you'll notice it has a deliberate inefficiency in how it handles S3 connections. Identify this issue in your submission comments and implement a fix either in the application code or through environment configuration.
 
 ### Task 2: Orchestrate the Services
 
-Create a `docker-compose.yml` file in the root of the repository to define and run the application stack.
+Create a bash script `bin/deploy-app.sh` in the root of the repository to define and run the application stack.
 
 1. The stack must consist of at least two services:
    - `data-app`: Your containerized Python application
@@ -60,8 +60,6 @@ Create a `docker-compose.yml` file in the root of the repository to define and r
 
 2. **Networking**: 
    - Services must communicate on a custom bridge network
-   - The data-app should NOT be accessible from the host on its native port
-   - Only expose what's necessary to the outside world
 
 3. **Data Persistence**: 
    - Minio's data must persist across container restarts
@@ -69,8 +67,7 @@ Create a `docker-compose.yml` file in the root of the repository to define and r
 
 4. **Configuration**:
    - Use environment variables for Minio connection details
-   - **Do NOT hardcode secrets** - use `.env` file (which should be in `.gitignore`)
-   - Provide a `.env.example` file with placeholder values
+   - implement appropriate secrets management
 
 **Challenge Element**: Your deployment script will need to verify the services are running correctly. Design your networking and service exposure strategy to accommodate health checks while maintaining security best practices.
 
@@ -78,13 +75,11 @@ Create a `docker-compose.yml` file in the root of the repository to define and r
 
 Create bash scripts to automate the deployment process. At minimum, you should create:
 
-1. **`scripts/deploy.sh`** - Main deployment script that:
-   - Checks prerequisites (Docker, Docker Compose installed)
-   - Validates environment configuration
-   - Runs linting on the Python code (using pylint or flake8)
+1. **`bin/deploy.sh`** - Main deployment script that:
+   - Checks prerequisites and configurations
+   - Runs linting on the Python code
    - Builds the Docker image with appropriate tagging
-   - Performs a basic security check on the Docker image (e.g., checking for vulnerabilities)
-   - Deploys the stack using Docker Compose
+   - Deploys the stack using `bin/deploy-app.sh`
    - Verifies the deployment was successful
    - Provides clear output and error messages
 
@@ -92,7 +87,7 @@ Create bash scripts to automate the deployment process. At minimum, you should c
    - Runs unit tests for the application (you'll need to create at least 2 basic tests in `tests/test_app.py`)
    - Exits with appropriate error codes for CI/CD integration
 
-3. **`scripts/health-check.sh`** - Post-deployment verification script that:
+3. **`bin/health-check.sh`** - Post-deployment verification script that:
    - Checks if services are running
    - Verifies the application can connect to Minio
    - Performs a basic operation (upload/retrieve test data)
@@ -147,26 +142,21 @@ Create bash scripts to automate the deployment process. At minimum, you should c
 
 ## Testing Your Submission
 
-Before submitting, ensure you can run the following successfully on a fresh Linux system with Docker and Docker Compose installed:
+Before submitting, ensure you can run the following successfully on a fresh Ubuntu Linux 24.04 system with Docker installed:
 
 ```bash
 # Clone your repository
 git clone <your-fork-url>
 cd <repository-name>
 
-# Copy and configure environment
-cp .env.example .env
-# Edit .env with appropriate values
-
 # Run deployment
-./scripts/deploy.sh
+./bin/deploy.sh
 
 # Run tests
-./scripts/test.sh
+./bin/test.sh
 
 # Verify health
-./scripts/health-check.sh
-```
+./bin/health-check.sh
 
 ---
 
