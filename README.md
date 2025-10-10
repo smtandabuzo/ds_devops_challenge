@@ -83,9 +83,9 @@ Create bash scripts to automate the deployment process. At minimum, you should c
    - Verifies the deployment was successful
    - Provides clear output and error messages
 
-2. **`scripts/test.sh`** - Testing script that:
-   - Runs unit tests for the application (you'll need to create at least 2 basic tests in `tests/test_app.py`)
-   - Exits with appropriate error codes for CI/CD integration
+2. **`bin/test.sh`** - Testing script that:
+   - Runs unit tests for the application
+   - Exits with appropriate error codes
 
 3. **`bin/health-check.sh`** - Post-deployment verification script that:
    - Checks if services are running
