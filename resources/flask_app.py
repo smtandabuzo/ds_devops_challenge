@@ -5,7 +5,7 @@ A simple Flask application that interacts with Minio S3 storage
 
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from flask import Flask, jsonify, request
 import boto3
 from botocore.exceptions import ClientError
@@ -81,7 +81,7 @@ def health_check():
         
         return jsonify({
             'status': 'healthy',
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'services': {
                 'minio': 'connected',
                 'database': 'not_used',
@@ -93,7 +93,7 @@ def health_check():
         return jsonify({
             'status': 'unhealthy',
             'error': str(e),
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'services': {
                 'minio': 'disconnected',
                 'database': 'not_used',
@@ -106,13 +106,18 @@ def health_check():
 def upload_data():
     """Upload data to S3 storage"""
     try:
-        data = request.get_json()
-        
-        if not data:
+        if not request.data:
             return jsonify({'error': 'No data provided'}), 400
+            
+        try:
+            data = request.get_json()
+            if data is None:
+                raise ValueError("Invalid JSON data")
+        except Exception as e:
+            return jsonify({'error': 'Invalid JSON data'}), 400
         
         # Generate a unique filename
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
         filename = f'data_{timestamp}.json'
         
         # Upload to S3
