@@ -1,11 +1,16 @@
 #!/bin/bash
 set -e
 
+# Get the script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
 # Load environment variables from .env file
-if [ -f "../.env" ]; then
-    export $(grep -v '^#' ../.env | xargs)
+if [ -f "$PROJECT_ROOT/.env" ]; then
+    # shellcheck source=/dev/null
+    source "$PROJECT_ROOT/.env"
 else
-    echo "Error: .env file not found. Please create one from .env.example"
+    echo "Error: .env file not found at $PROJECT_ROOT/.env. Please create one from .env.example"
     exit 1
 fi
 
@@ -33,11 +38,19 @@ fi
 echo "Building application image..."
 docker build -t data-app .
 
-# Create Docker secret for MinIO credentials
-if [ -z "$(docker secret ls -q -f name=minio_access_key)" ]; then
-    echo "Creating Docker secrets..."
-    echo "$MINIO_ACCESS_KEY" | docker secret create minio_access_key -
-    echo "$MINIO_SECRET_KEY" | docker secret create minio_secret_key -
+# Create a directory for secrets if it doesn't exist
+SECRETS_DIR="$PROJECT_ROOT/.secrets"
+mkdir -p "$SECRETS_DIR"
+chmod 700 "$SECRETS_DIR"
+
+# Create secret files if they don't exist
+if [ ! -f "$SECRETS_DIR/minio_access_key" ]; then
+    echo "$MINIO_ACCESS_KEY" > "$SECRETS_DIR/minio_access_key"
+    chmod 600 "$SECRETS_DIR/minio_access_key"
+fi
+if [ ! -f "$SECRETS_DIR/minio_secret_key" ]; then
+    echo "$MINIO_SECRET_KEY" > "$SECRETS_DIR/minio_secret_key"
+    chmod 600 "$SECRETS_DIR/minio_secret_key"
 fi
 
 # Run MinIO
@@ -47,10 +60,10 @@ docker run -d \
     --network ${NETWORK_NAME} \
     -p ${MINIO_PORT}:9000 \
     -p 9001:9001 \
-    --secret source=minio_access_key,target=MINIO_ACCESS_KEY \
-    --secret source=minio_secret_key,target=MINIO_SECRET_KEY \
-    -e MINIO_ROOT_USER_FILE=/run/secrets/MINIO_ACCESS_KEY \
-    -e MINIO_ROOT_PASSWORD_FILE=/run/secrets/MINIO_SECRET_KEY \
+    -v "$SECRETS_DIR/minio_access_key:/run/secrets/MINIO_ACCESS_KEY" \
+    -v "$SECRETS_DIR/minio_secret_key:/run/secrets/MINIO_SECRET_KEY" \
+    -e MINIO_ROOT_USER="$MINIO_ACCESS_KEY" \
+    -e MINIO_ROOT_PASSWORD="$MINIO_SECRET_KEY" \
     -v ${VOLUME_NAME}:/data \
     quay.io/minio/minio server /data --console-address ":9001"
 
@@ -73,10 +86,10 @@ docker run -d \
     --name data-app \
     --network ${NETWORK_NAME} \
     -p ${APP_PORT}:5000 \
-    --secret source=minio_access_key,target=MINIO_ACCESS_KEY \
-    --secret source=minio_secret_key,target=MINIO_SECRET_KEY \
-    -e MINIO_ACCESS_KEY_FILE=/run/secrets/MINIO_ACCESS_KEY \
-    -e MINIO_SECRET_KEY_FILE=/run/secrets/MINIO_SECRET_KEY \
+    -v "$SECRETS_DIR/minio_access_key:/run/secrets/MINIO_ACCESS_KEY" \
+    -v "$SECRETS_DIR/minio_secret_key:/run/secrets/MINIO_SECRET_KEY" \
+    -e MINIO_ACCESS_KEY="$MINIO_ACCESS_KEY" \
+    -e MINIO_SECRET_KEY="$MINIO_SECRET_KEY" \
     -e MINIO_ENDPOINT=minio:9000 \
     -e BUCKET_NAME=${BUCKET_NAME} \
     data-app
