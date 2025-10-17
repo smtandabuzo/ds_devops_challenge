@@ -13,30 +13,37 @@ from botocore.exceptions import ClientError
 app = Flask(__name__)
 
 # Configuration from environment variables
-MINIO_ENDPOINT = os.getenv('MINIO_ENDPOINT', 'minio:9000')
 MINIO_ACCESS_KEY = os.getenv('MINIO_ACCESS_KEY', 'minioadmin')
 MINIO_SECRET_KEY = os.getenv('MINIO_SECRET_KEY', 'minioadmin')
+MINIO_ENDPOINT = os.getenv('MINIO_ENDPOINT', 'minio:9000')
 BUCKET_NAME = os.getenv('BUCKET_NAME', 'analytics-data')
 
 
+# Initialize S3 client as None
+_s3_client = None
+
 def get_s3_client():
     """
-    Create and return an S3 client for Minio
-    NOTE: This is intentionally inefficient - creating a new client on each call
+    Get or create an S3 client for Minio with connection pooling
+    Uses a singleton pattern to reuse the client across requests
     """
-    return boto3.client(
-        's3',
-        endpoint_url=f'http://{MINIO_ENDPOINT}',
-        aws_access_key_id=MINIO_ACCESS_KEY,
-        aws_secret_access_key=MINIO_SECRET_KEY,
-        region_name='us-east-1'
-    )
-
-
-def ensure_bucket_exists():
-    """Ensure the analytics bucket exists"""
-    s3_client = get_s3_client()
-    try:
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client(
+            's3',
+            endpoint_url=f'http://{MINIO_ENDPOINT}',
+            aws_access_key_id=MINIO_ACCESS_KEY,
+            aws_secret_access_key=MINIO_SECRET_KEY,
+            region_name='us-east-1',
+            config=boto3.session.Config(
+                max_pool_connections=100,  # Increased connection pool size
+                retries={
+                    'max_attempts': 3,
+                    'mode': 'standard'
+                },
+                connect_timeout=5,
+                read_timeout=30
+            )
         s3_client.head_bucket(Bucket=BUCKET_NAME)
     except ClientError:
         s3_client.create_bucket(Bucket=BUCKET_NAME)
