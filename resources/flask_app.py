@@ -13,10 +13,25 @@ from botocore.exceptions import ClientError
 app = Flask(__name__)
 
 # Configuration from environment variables
-MINIO_ACCESS_KEY = os.getenv('MINIO_ACCESS_KEY', 'minioadmin')
-MINIO_SECRET_KEY = os.getenv('MINIO_SECRET_KEY', 'minioadmin')
-MINIO_ENDPOINT = os.getenv('MINIO_ENDPOINT', 'minio:9000')
-BUCKET_NAME = os.getenv('BUCKET_NAME', 'analytics-data')
+def get_env_var(name, default=None, file_path=None):
+    """Get environment variable or from file if specified"""
+    value = os.getenv(name)
+    if value is not None:
+        return value
+    
+    file_var = f"{name}_FILE"
+    file_path = os.getenv(file_var, file_path)
+    if file_path and os.path.exists(file_path):
+        with open(file_path, 'r') as f:
+            return f.read().strip()
+    
+    return default
+
+# Read configuration with fallback to file-based secrets
+MINIO_ACCESS_KEY = get_env_var('MINIO_ACCESS_KEY', 'minioadmin', '/run/secrets/MINIO_ACCESS_KEY')
+MINIO_SECRET_KEY = get_env_var('MINIO_SECRET_KEY', 'minioadmin', '/run/secrets/MINIO_SECRET_KEY')
+MINIO_ENDPOINT = get_env_var('MINIO_ENDPOINT', 'minio:9000')
+BUCKET_NAME = get_env_var('BUCKET_NAME', 'analytics-data')
 
 
 # Initialize S3 client as None
@@ -44,40 +59,48 @@ def get_s3_client():
                 connect_timeout=5,
                 read_timeout=30
             )
-        s3_client.head_bucket(Bucket=BUCKET_NAME)
-    except ClientError:
-        s3_client.create_bucket(Bucket=BUCKET_NAME)
-        print(f"Created bucket: {BUCKET_NAME}")
+        )
+        
+        # Ensure bucket exists
+        try:
+            _s3_client.head_bucket(Bucket=BUCKET_NAME)
+        except ClientError:
+            _s3_client.create_bucket(Bucket=BUCKET_NAME)
+            print(f"Created bucket: {BUCKET_NAME}")
+    
+    return _s3_client
 
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.utcnow().isoformat(),
-        'service': 'data-analytics-service'
-    }), 200
-
-
-@app.route('/storage/health', methods=['GET'])
-def storage_health():
-    """Check if we can connect to Minio"""
+    """Health check endpoint that verifies MinIO connectivity"""
     try:
-        s3_client = get_s3_client()
-        s3_client.list_buckets()
+        # Check if we can connect to MinIO
+        s3 = get_s3_client()
+        s3.list_buckets()
+        
         return jsonify({
             'status': 'healthy',
-            'storage': 'connected',
-            'endpoint': MINIO_ENDPOINT
+            'timestamp': datetime.utcnow().isoformat(),
+            'services': {
+                'minio': 'connected',
+                'database': 'not_used',
+                'api': 'running'
+            },
+            'endpoint': f'http://{MINIO_ENDPOINT}'
         }), 200
     except Exception as e:
         return jsonify({
             'status': 'unhealthy',
-            'storage': 'disconnected',
-            'error': str(e)
+            'error': str(e),
+            'timestamp': datetime.utcnow().isoformat(),
+            'services': {
+                'minio': 'disconnected',
+                'database': 'not_used',
+                'api': 'running'
+            },
+            'endpoint': f'http://{MINIO_ENDPOINT}'
         }), 503
-
 
 @app.route('/data', methods=['POST'])
 def upload_data():
@@ -169,34 +192,39 @@ def delete_data(filename):
             'message': 'File deleted successfully',
             'filename': filename
         }), 200
-        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# Health check endpoint is already defined above
 
-@app.route('/', methods=['GET'])
+@app.route('/')
 def index():
     """Root endpoint with API information"""
     return jsonify({
-        'service': 'Data Analytics Hub - S3 Data Service',
+        'name': 'Data Analytics Hub - S3 Data Service',
         'version': '1.0.0',
-        'endpoints': {
-            'health': '/health',
-            'storage_health': '/storage/health',
-            'upload_data': 'POST /data',
-            'list_data': 'GET /data',
-            'get_data': 'GET /data/<filename>',
-            'delete_data': 'DELETE /data/<filename>'
-        }
-    }), 200
+        'endpoints': [
+            {'path': '/', 'methods': ['GET'], 'description': 'API information'},
+            {'path': '/health', 'methods': ['GET'], 'description': 'Health check'},
+            {'path': '/upload', 'methods': ['POST'], 'description': 'Upload data'},
+            {'path': '/data', 'methods': ['GET'], 'description': 'List all data'},
+            {'path': '/data/<filename>', 'methods': ['GET'], 'description': 'Get specific data'},
+            {'path': '/data/<filename>', 'methods': ['DELETE'], 'description': 'Delete specific data'}
+        ]
+    })
 
+def ensure_bucket_exists():
+    """Ensure the S3 bucket exists"""
+    try:
+        s3 = get_s3_client()
+        s3.create_bucket(Bucket=BUCKET_NAME)
+    except Exception as e:
+        # Bucket likely already exists
+        pass
 
 if __name__ == '__main__':
     # Ensure bucket exists on startup
-    try:
-        ensure_bucket_exists()
-    except Exception as e:
-        print(f"Warning: Could not ensure bucket exists: {e}")
+    ensure_bucket_exists()
     
     # Run the application
     app.run(host='0.0.0.0', port=5000, debug=False)

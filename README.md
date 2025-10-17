@@ -105,11 +105,122 @@ Create bash scripts to automate the deployment process. At minimum, you should c
 
 2. Create basic unit tests in `tests/test_app.py` (at least 2 tests)
 
-3. Add a `DEPLOYMENT.md` file that includes:
-   - Prerequisites for running this stack
-   - Step-by-step deployment instructions
-   - How to run the deployment scripts
-   - Troubleshooting section with at least 3 common issues and their solutions
+## Prerequisites
+
+- Docker 20.10.0 or higher
+- Docker Compose (if using the provided scripts)
+- Git
+
+## Quick Start
+
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd ds_devops_challenge
+   ```
+
+2. **Set up environment variables**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your configuration
+   nano .env
+   ```
+
+3. **Deploy the application**
+   ```bash
+   # Make the deployment script executable
+   chmod +x bin/deploy-app.sh
+   
+   # Run the deployment
+   ./bin/deploy-app.sh
+   ```
+
+4. **Access the services**
+   - Application: http://localhost:5000
+   - MinIO Console: http://localhost:9001
+     - Default credentials (from .env):
+       - Access Key: `minioadmin`
+       - Secret Key: `minioadmin`
+
+## Environment Variables
+
+Create a `.env` file based on `.env.example` with the following variables:
+
+```bash
+# MinIO Configuration
+MINIO_ACCESS_KEY=your_access_key_here
+MINIO_SECRET_KEY=your_secret_key_here
+MINIO_PORT=9000
+
+# Application Configuration
+APP_PORT=5000
+NETWORK_NAME=analytics-network
+VOLUME_NAME=minio-data
+BUCKET_NAME=analytics-data
+```
+
+## Troubleshooting
+
+### 1. Port Conflicts
+**Issue**: Ports 5000, 9000, or 9001 are already in use.
+**Solution**: 
+- Change the ports in `.env`
+- Or stop the services using those ports
+
+### 2. Permission Denied
+**Issue**: Scripts are not executable.
+**Solution**:
+```bash
+chmod +x bin/*.sh
+```
+
+### 3. MinIO Not Starting
+**Issue**: MinIO container fails to start.
+**Solution**:
+- Check if the volume is corrupted: `docker volume rm minio-data`
+- Verify no other MinIO instance is running: `docker ps | grep minio`
+
+### 4. Health Check Failing
+**Issue**: Application health check fails.
+**Solution**:
+- Check logs: `docker logs data-app`
+- Verify MinIO is running: `docker ps`
+- Check network connectivity: `docker network inspect analytics-network`
+
+## Security Considerations
+
+- Never commit the `.env` file to version control
+- Use strong credentials in production
+- Consider adding TLS/HTTPS in production
+- Restrict network access to the MinIO console in production
+
+## Clean Up
+
+To stop and remove all containers and volumes:
+
+```bash
+# Stop and remove containers
+docker stop minio data-app 2>/dev/null
+docker rm minio data-app 2>/dev/null
+
+# Remove volume
+docker volume rm minio-data 2>/dev/null
+
+# Remove network (if needed)
+docker network rm analytics-network 2>/dev/null
+```
+
+## Development
+
+To run tests:
+```bash
+./bin/test.sh
+```
+
+To check application health:
+```bash
+curl http://localhost:5000/health
+```
    - How to verify the deployment was successful
    - How to perform a rollback
    
