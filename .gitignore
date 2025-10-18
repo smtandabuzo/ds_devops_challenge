@@ -4,6 +4,13 @@
 !.env.example
 .secrets/
 
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+.terraform.tfstate.lock.info
+
 # Python
 __pycache__/
 *.py[cod]
