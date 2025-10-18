@@ -137,66 +137,100 @@ docker logs -f minio
 
 ## Troubleshooting
 
-### 1. Port Already in Use
-**Error**: `Address already in use` or `port is already allocated`  
+### 1. ECS Service Fails to Start
+**Error**: `ECS task failed to start`  
+**Solution**:
+1. Check ECS service events:
+   ```bash
+   aws ecs describe-services \
+     --cluster ds-devops-app-cluster \
+     --services ds-devops-app-service
+   ```
+2. Check stopped tasks:
+   ```bash
+   aws ecs describe-tasks \
+     --cluster ds-devops-app-cluster \
+     --tasks $(aws ecs list-tasks --cluster ds-devops-app-cluster --service-name ds-devops-app-service --query 'taskArns' --output text)
+   ```
+
+### 2. Container Health Check Failures
+**Error**: `Task failed ELB health checks`  
+**Solution**:
+1. Check target group health:
+   ```bash
+   aws elbv2 describe-target-health \
+     --target-group-arn arn:aws:elasticloadbalancing:us-east-1:810772959397:targetgroup/ds-devops-app-tg/9e96df569e8821c8
+   ```
+2. Verify security group rules allow traffic on port 5000
+3. Check application logs for errors
+
+### 3. ECR Login Issues
+**Error**: `no basic auth credentials`  
 **Solution**:
 ```bash
-# Find and stop the process using the port
-sudo lsof -i :<port>
-kill -9 <PID>
-
-# Or change the port in your docker run command
-# Example: Change -p 5000:5000 to -p 5001:5000
+aws ecr get-login-password --region us-east-1 | \
+  docker login --username AWS --password-stdin 810772959397.dkr.ecr.us-east-1.amazonaws.com
 ```
 
-### 2. MinIO Connection Refused
-**Error**: `ConnectionRefusedError: [Errno 111] Connection refused`  
-**Solution**:
-1. Check if MinIO is running:
-   ```bash
-   docker ps | grep minio
-   ```
-2. Check MinIO logs:
-   ```bash
-   docker logs minio
-   ```
-3. Ensure correct credentials in `.env`
-
-### 3. Docker Build Failure
-**Error**: `failed to solve: ...`  
-**Solution**:
-1. Check Docker daemon is running:
-   ```bash
-   systemctl status docker
-   ```
-2. Check disk space:
-   ```bash
-   df -h
-   ```
-3. Rebuild with no cache:
-   ```bash
-   docker build --no-cache -t ds-app .
-   ```
-
-### 4. Permission Denied on Scripts
-**Error**: `Permission denied` when running scripts  
+### 4. Terraform State Locked
+**Error**: `Error acquiring the state lock`  
 **Solution**:
 ```bash
-chmod +x bin/*.sh
+# List and remove lock if needed
+aws s3 ls s3://ds-devops-tfstate-810772959397/
+aws s3 rm s3://ds-devops-tfstate-810772959397/terraform.tfstate.lock.info
 ```
 
-### 5. Health Check Failing
-**Error**: Health check returns non-200 status  
+### 5. Service Discovery Issues
+**Error**: `ServiceDiscovery:ListTagsForResource` permission error  
 **Solution**:
-1. Check application logs:
-   ```bash
-   docker logs ds-app
-   ```
-2. Verify all services are running:
-   ```bash
-   docker ps
-   ```
-3. Check network connectivity:
+Ensure IAM user has `servicediscovery:*` permissions or specifically:
+- `servicediscovery:ListTagsForResource`
+- `servicediscovery:CreatePrivateDnsNamespace`
+- `servicediscovery:CreateService`
+
+### 6. Viewing Logs
+```bash
+# Get the most recent log stream
+LOG_STREAM=$(aws logs describe-log-streams \
+  --log-group-name /ecs/ds-devops-app \
+  --order-by LastEventTime \
+  --descending \
+  --query 'logStreams[0].logStreamName' \
+  --output text)
+
+# View the logs
+aws logs get-log-events \
+  --log-group-name /ecs/ds-devops-app \
+  --log-stream-name "$LOG_STREAM" \
+  --query 'events[].message' \
+  --output text
+```
+
+### 7. Scaling the Service
+```bash
+# Update the desired count
+aws ecs update-service \
+  --cluster ds-devops-app-cluster \
+  --service ds-devops-app-service \
+  --desired-count 2 \
+  --force-new-deployment
+```
+
+### 8. Cleaning Up
+To destroy all resources:
+```bash
+cd terraform
+terraform destroy
+```
+
+### 9. Common Issues
+- **Insufficient IAM Permissions**: Ensure the IAM user has all required permissions
+- **VPC/Subnet Issues**: Verify the VPC and subnets exist and are properly configured
+- **Container Port Mismatch**: Ensure the container port in the task definition matches the application port
+- **Task Definition Issues**: Check CPU and memory allocations in the task definition
+
+For additional help, check the AWS documentation or contact your AWS administrator.
    ```bash
    docker network ls
    docker network inspect bridge

@@ -143,47 +143,95 @@ backup_current_deployment() {
         echo -e "${YELLOW}⚠️  No existing data-app container found${NC}"
     fi
     
-    # Save environment variables
     env | grep -E '^(MINIO_|APP_|NETWORK_|VOLUME_|BUCKET_)' > "${BACKUP_DIR}/environment"
     
     echo -e "${GREEN}✅ Backup completed in $BACKUP_DIR${NC}"
 }
 
-# Build Docker image
+# Build Docker image and push to ECR
 build_docker_image() {
-    echo -e "${YELLOW}🔨 Building Docker image...${NC}"
+    echo -e "${GREEN}🚀 Building and pushing Docker image to ECR...${NC}\n"
     
-    local timestamp
-    timestamp=$(date +%Y%m%d%H%M%S)
-    local git_sha
-    git_sha=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    # Get AWS account ID and use us-east-1 region
+    local aws_account_id
+    aws_account_id=$(aws sts get-caller-identity --query Account --output text)
+    local aws_region="us-east-1"
     
-    # Build with multiple tags
-    if ! docker build \
-        -t "data-app:latest" \
-        -t "data-app:${timestamp}" \
-        -t "data-app:${git_sha}" \
-        -f "$PROJECT_ROOT/Dockerfile" \
-        "$PROJECT_ROOT"; then
-        echo -e "${RED}❌ Docker build failed${NC}"
-        exit 1
+    # Get the current git commit hash for tagging
+    local git_commit
+    git_commit=$(git rev-parse --short HEAD 2>/dev/null || echo "latest")
+    # Login to ECR
+    echo -e "${YELLOW}🔐 Logging in to Amazon ECR...${NC}"
+    if ! aws ecr get-login-password --region "$aws_region" | docker login --username AWS --password-stdin "${aws_account_id}.dkr.ecr.${aws_region}.amazonaws.com"; then
+        echo -e "${RED}❌ Failed to authenticate with ECR${NC}"
+        return 1
     fi
     
-    echo -e "${GREEN}✅ Docker image built successfully!${NC}"
+    # Build the image with multiple tags
+    local ecr_image="${aws_account_id}.dkr.ecr.${aws_region}.amazonaws.com/ds-devops-app:${git_commit}"
+    
+    echo -e "\n${YELLOW}🏗️  Building Docker image...${NC}"
+    if ! docker build -t "${ecr_image}" -t "${aws_account_id}.dkr.ecr.${aws_region}.amazonaws.com/ds-devops-app:latest" "$PROJECT_ROOT"; then
+        echo -e "${RED}❌ Failed to build Docker image${NC}"
+        return 1
+    fi
+    
+    # Push the image to ECR
+    echo -e "\n${YELLOW}🚀 Pushing image to ECR...${NC}"
+    if ! docker push "${ecr_image}"; then
+        echo -e "${RED}❌ Failed to push image to ECR${NC}"
+        return 1
+    fi
+    
+    # Also push the 'latest' tag
+    if ! docker push "${aws_account_id}.dkr.ecr.${aws_region}.amazonaws.com/ds-devops-app:latest"; then
+        echo -e "${YELLOW}⚠️  Warning: Failed to push 'latest' tag to ECR${NC}"
+    fi
+    
+    # Set the image tag for Terraform
+    export TF_VAR_image_tag="${git_commit}"
+    
+    echo -e "\n${GREEN}✅ Successfully built and pushed Docker image to ECR: ${ecr_image}${NC}"
+    return 0
 }
 
-# Main deployment function
 deploy() {
-    echo -e "${YELLOW}🚀 Starting deployment...${NC}"
+    echo -e "${YELLOW}🚀 Starting deployment to AWS ECS...${NC}"
     
     # Mark that we need rollback if anything fails from now on
     ROLLBACK_NEEDED=true
+    # Change to terraform directory
+    cd "$PROJECT_ROOT/terraform" || {
+        echo -e "${RED}❌ Failed to change to terraform directory${NC}"
+        return 1
+    }
     
-    # Run the deployment script
-    if ! bash "$SCRIPT_DIR/deploy-app.sh"; then
-        echo -e "${RED}❌ Deployment failed!${NC}"
-        exit 1
+    # Initialize Terraform if not already
+    if [ ! -d ".terraform" ]; then
+        echo -e "${YELLOW}🔄 Initializing Terraform...${NC}"
+        if ! terraform init; then
+            echo -e "${RED}❌ Terraform initialization failed${NC}"
+            return 1
+        fi
     fi
+    
+    # Apply the Terraform configuration
+    echo -e "\n${YELLOW}🔄 Applying Terraform configuration...${NC}"
+    if ! terraform apply -auto-approve -var="image_tag=${TF_VAR_image_tag:-latest}"; then
+        echo -e "${RED}❌ Terraform apply failed${NC}"
+        return 1
+    fi
+    
+    # Get the ALB DNS name
+    local alb_dns
+    alb_dns=$(terraform output -raw alb_dns_name)
+    
+    echo -e "\n${GREEN}✅ Deployment complete!${NC}"
+    echo -e "\n${GREEN}🌐 Application URL: http://${alb_dns}${NC}"
+    echo -e "${GREEN}📊 MinIO Console: http://${alb_dns}:9001${NC}"
+    
+    # Unset rollback flag since deployment was successful
+    ROLLBACK_NEEDED=false
     
     # If we got here, deployment was successful
     ROLLBACK_NEEDED=false
