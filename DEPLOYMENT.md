@@ -30,6 +30,8 @@ Before starting the deployment, ensure you have the following:
   - GitHub repository access
   - SSH access to the deployment server
   - MinIO access and secret keys
+  - AWS IAM user with appropriate permissions (EC2, ECS, ECR, etc.)
+  - SSH key pair for EC2 instance access (or let Terraform create one)
 
 ## Deployment Instructions
 
@@ -47,20 +49,96 @@ cp .env.example .env
 nano .env
 ```
 
-### 3. Deploy with Docker
-```bash
-# Build and start the application
-docker build -t ds-app .
-docker run -d -p 5000:5000 --name ds-app ds-app
+### 3. Deploy with Terraform
 
-# Start MinIO
+1. **Set Up SSH Key Pair**
+   ```bash
+   # Generate a new SSH key pair (if you don't have one)
+   ssh-keygen -t rsa -b 4096 -f ~/.ssh/ds-devops-key
+   
+   # Set proper permissions
+   chmod 400 ~/.ssh/ds-devops-key
+   
+   # View public key (you'll need this for Terraform)
+   cat ~/.ssh/ds-devops-key.pub
+   ```
+
+2. **Set Up AWS ECR (if not using public images)**
+   ```bash
+   # Login to ECR
+   aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 810772959397.dkr.ecr.us-east-1.amazonaws.com
+   
+   # Create ECR repository (if it doesn't exist)
+   aws ecr create-repository --repository-name ds-devops-app --region us-east-1
+   
+   # Build and push your application image
+   docker build -t ds-devops-app .
+   docker tag ds-devops-app:latest 810772959397.dkr.ecr.us-east-1.amazonaws.com/ds-devops-app:latest
+   docker push 810772959397.dkr.ecr.us-east-1.amazonaws.com/ds-devops-app:latest
+   ```
+
+3. **Initialize Terraform**
+   ```bash
+   cd terraform
+   
+   # If you want Terraform to create the key pair, update the key_name in variables.tf
+   # Otherwise, ensure your existing key pair is specified in variables.tf
+   
+   terraform init
+   
+   # Review and apply the plan
+   terraform plan
+   
+   # The plan should show the creation of:
+   # - aws_key_pair.ec2_key_pair (if creating new key pair)
+   # - aws_instance.ecs_instance (using the key pair)
+   ```
+
+2. **Review the execution plan**
+   ```bash
+   terraform plan
+   ```
+
+3. **Apply the configuration**
+   ```bash
+   terraform apply
+   ```
+
+### 4. Deploy with Docker (Local Development)
+
+#### Using Public Images
+```bash
+# Start MinIO (public image)
 docker run -d \
   -p 9000:9000 \
   -p 9001:9001 \
-  -e "MINIO_ROOT_USER=your-access-key" \
-  -e "MINIO_ROOT_PASSWORD=your-secret-key" \
+  -e "MINIO_ROOT_USER=minioadmin" \
+  -e "MINIO_ROOT_PASSWORD=minioadmin" \
+  -v minio_data:/data \
   --name minio \
   minio/minio server /data --console-address ":9001"
+
+# Build and start the application
+docker build -t ds-app .
+docker run -d -p 5000:5000 --name ds-app --network host ds-app
+```
+
+#### Using AWS ECR Images
+```bash
+# Pull and run MinIO from ECR (if using a custom image)
+docker pull 810772959397.dkr.ecr.us-east-1.amazonaws.com/your-minio-image:latest
+docker run -d \
+  -p 9000:9000 \
+  -p 9001:9001 \
+  -e "MINIO_ROOT_USER=minioadmin" \
+  -e "MINIO_ROOT_PASSWORD=minioadmin" \
+  -v minio_data:/data \
+  --name minio \
+  810772959397.dkr.ecr.us-east-1.amazonaws.com/your-minio-image:latest server /data --console-address ":9001"
+
+# Pull and run your application from ECR
+docker pull 810772959397.dkr.ecr.us-east-1.amazonaws.com/ds-devops-app:latest
+docker run -d -p 5000:5000 --name ds-app --network host 810772959397.dkr.ecr.us-east-1.amazonaws.com/ds-devops-app:latest
 ```
 
 ### 4. Initialize MinIO
@@ -90,27 +168,48 @@ chmod +x bin/*.sh
 
 ## Verifying Deployment
 
-### Check Running Services
+### Check ECS Cluster Status
 ```bash
-docker ps
+# List container instances in the cluster
+aws ecs list-container-instances --cluster ds-devops-app-cluster
+
+# Describe container instances
+aws ecs describe-container-instances \
+  --cluster ds-devops-app-cluster \
+  --container-instances $(aws ecs list-container-instances --cluster ds-devops-app-cluster --query 'containerInstanceArns[0]' --output text)
+
+# List running tasks
+aws ecs list-tasks --cluster ds-devops-app-cluster
 ```
 
-### Verify API Endpoints
+### Verify MinIO Service
 ```bash
-# Health check
-curl http://localhost:5000/health
+# Check service status
+aws ecs describe-services \
+  --cluster ds-devops-app-cluster \
+  --services minio-service
 
-# List files in MinIO
-curl http://localhost:5000/data
+# Get task details
+TASK_ARN=$(aws ecs list-tasks --cluster ds-devops-app-cluster --service-name minio-service --query 'taskArns[0]' --output text)
+aws ecs describe-tasks --cluster ds-devops-app-cluster --tasks $TASK_ARN
 ```
+
+### Access MinIO Console
+1. Get the ALB DNS name:
+   ```bash
+   aws elbv2 describe-load-balancers --names ds-devops-app-alb --query 'LoadBalancers[0].DNSName' --output text
+   ```
+2. Open in browser: `http://<ALB_DNS_NAME>:9001`
+3. Login with credentials from your Terraform variables
 
 ### Check Logs
 ```bash
-# Application logs
-docker logs -f ds-app
+# ECS agent logs
+sudo tail -f /var/log/ecs/ecs-agent.log
 
-# MinIO logs
-docker logs -f minio
+# MinIO container logs
+CONTAINER_ID=$(docker ps -q --filter "name=minio")
+docker logs -f $CONTAINER_ID
 ```
 
 ## Rollback Procedure
@@ -138,38 +237,121 @@ docker logs -f minio
 ## Troubleshooting
 
 ### 1. ECS Service Fails to Start
-**Error**: `ECS task failed to start`  
+**Error**: `ECS task failed to start` or `Insufficient memory available`  
 **Solution**:
 1. Check ECS service events:
    ```bash
    aws ecs describe-services \
      --cluster ds-devops-app-cluster \
-     --services ds-devops-app-service
+     --services minio-service
    ```
 2. Check stopped tasks:
    ```bash
    aws ecs describe-tasks \
      --cluster ds-devops-app-cluster \
-     --tasks $(aws ecs list-tasks --cluster ds-devops-app-cluster --service-name ds-devops-app-service --query 'taskArns' --output text)
+     --tasks $(aws ecs list-tasks --cluster ds-devops-app-cluster --service-name minio-service --query 'taskArns' --output text)
+   ```
+3. **Memory Issues**:
+   - Ensure your EC2 instance type has sufficient memory (t3.small or larger recommended)
+   - Check task definition memory settings (768MB minimum for MinIO)
+   - Verify ECS agent is running: `sudo systemctl status ecs`
+   - Check ECS agent logs: `sudo tail -f /var/log/ecs/ecs-agent.log`
+
+### 2. ECS Agent Not Registering with Cluster
+**Error**: `Data mismatch; saved cluster 'default' does not match configured cluster`  
+**Solution**:
+1. Check ECS agent configuration:
+   ```bash
+   cat /etc/ecs/ecs.config
+   ```
+2. Update ECS cluster configuration:
+   ```bash
+   echo "ECS_CLUSTER=ds-devops-app-cluster" | sudo tee /etc/ecs/ecs.config
+   ```
+3. Clear ECS agent state and restart:
+   ```bash
+   sudo rm -f /var/lib/ecs/data/ecs_agent_data.json
+   sudo systemctl restart ecs
+   ```
+4. Verify agent status:
+   ```bash
+   sudo systemctl status ecs
+   sudo tail -f /var/log/ecs/ecs-agent.log
    ```
 
-### 2. Container Health Check Failures
+### 3. MinIO Service Health Check Failures
 **Error**: `Task failed ELB health checks`  
 **Solution**:
 1. Check target group health:
    ```bash
    aws elbv2 describe-target-health \
-     --target-group-arn arn:aws:elasticloadbalancing:us-east-1:810772959397:targetgroup/ds-devops-app-tg/9e96df569e8821c8
+     --target-group-arn $(aws elbv2 describe-target-groups --names minio-tg --query 'TargetGroups[0].TargetGroupArn' --output text)
    ```
-2. Verify security group rules allow traffic on port 5000
-3. Check application logs for errors
+2. Verify security group rules allow traffic on ports 9000 (API) and 9001 (Console)
+3. Check MinIO container logs:
+   ```bash
+   # Get container ID
+   CONTAINER_ID=$(docker ps -q --filter "name=minio")
+   docker logs $CONTAINER_ID
+   ```
+4. Verify MinIO service is accessible:
+   ```bash
+   # From the EC2 instance
+   curl -v http://localhost:9000/minio/health/live
+   ```
+5. Check ECS task logs:
+   ```bash
+   # Get the most recent task ID
+   TASK_ARN=$(aws ecs list-tasks --cluster ds-devops-app-cluster --service-name minio-service --query 'taskArns[0]' --output text)
+   
+   # Get the log stream name
+   LOG_STREAM=$(aws logs describe-log-streams \
+     --log-group-name /ecs/minio \
+     --order-by LastEventTime \
+     --descending \
+     --query 'logStreams[0].logStreamName' \
+     --output text)
+   
+   # View the logs
+   aws logs get-log-events \
+     --log-group-name /ecs/minio \
+     --log-stream-name "$LOG_STREAM"
+   ```
 
-### 3. ECR Login Issues
+### 3. SSH Access Issues
+**Error**: `Permission denied (publickey)` when trying to SSH to EC2  
+**Solution**:
+1. Ensure you're using the correct key pair:
+   ```bash
+   # Check the key pair name in Terraform output
+   terraform output -raw key_pair_name
+   
+   # SSH using the correct key
+   ssh -i ~/.ssh/your-key.pem ec2-user@<instance-public-ip>
+   ```
+2. If using an existing key pair, verify it's correctly specified in `variables.tf`
+3. Check security group rules allow SSH access (port 22) from your IP
+
+### 4. ECR Login and Push Issues
 **Error**: `no basic auth credentials`  
 **Solution**:
+1. Ensure you have the AWS CLI configured with proper credentials
+2. Log in to ECR:
+   ```bash
+   aws ecr get-login-password --region us-east-1 | \
+     docker login --username AWS --password-stdin 810772959397.dkr.ecr.us-east-1.amazonaws.com
+   ```
+3. If pushing fails, verify the repository exists and your IAM user has `ecr:InitiateLayerUpload` and `ecr:UploadLayerPart` permissions
+
+**Error**: `Repository not found`  
+**Solution**:
 ```bash
-aws ecr get-login-password --region us-east-1 | \
-  docker login --username AWS --password-stdin 810772959397.dkr.ecr.us-east-1.amazonaws.com
+# Create the repository if it doesn't exist
+aws ecr create-repository --repository-name your-repo-name --region us-east-1
+
+# Tag and push the image
+docker tag your-image:latest 810772959397.dkr.ecr.us-east-1.amazonaws.com/your-repo-name:latest
+docker push 810772959397.dkr.ecr.us-east-1.amazonaws.com/your-repo-name:latest
 ```
 
 ### 4. Terraform State Locked
@@ -189,22 +371,46 @@ Ensure IAM user has `servicediscovery:*` permissions or specifically:
 - `servicediscovery:CreatePrivateDnsNamespace`
 - `servicediscovery:CreateService`
 
-### 6. Viewing Logs
+### 4. Viewing ECS Logs
+
+#### View ECS Agent Logs
 ```bash
-# Get the most recent log stream
+# View live ECS agent logs
+sudo tail -f /var/log/ecs/ecs-agent.log
+
+# Search for errors
+sudo grep -i error /var/log/ecs/ecs-agent.log
+
+# Check cluster registration
+sudo grep -i cluster /var/log/ecs/ecs-agent.log
+```
+
+#### View MinIO Container Logs
+```bash
+# Get container ID
+CONTAINER_ID=$(docker ps -q --filter "name=minio")
+
+# View logs
+docker logs $CONTAINER_ID
+
+# Follow logs
+docker logs -f $CONTAINER_ID
+```
+
+#### View CloudWatch Logs
+```bash
+# Get the most recent log stream for MinIO
 LOG_STREAM=$(aws logs describe-log-streams \
-  --log-group-name /ecs/ds-devops-app \
+  --log-group-name /ecs/minio \
   --order-by LastEventTime \
   --descending \
   --query 'logStreams[0].logStreamName' \
   --output text)
 
-# View the logs
+# View the log events
 aws logs get-log-events \
-  --log-group-name /ecs/ds-devops-app \
-  --log-stream-name "$LOG_STREAM" \
-  --query 'events[].message' \
-  --output text
+  --log-group-name /ecs/minio \
+  --log-stream-name "$LOG_STREAM"
 ```
 
 ### 7. Scaling the Service
