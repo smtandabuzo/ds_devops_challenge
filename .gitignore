@@ -1,5 +1,7 @@
 # Environment variables and secrets
 .env
+.env.*
+!.env.example
 .secrets/
 
 # Python
@@ -34,6 +36,7 @@ ENV/
 .vscode/
 *.swp
 *.swo
+*.sublime-*
 
 # Docker
 data/
@@ -41,6 +44,69 @@ data/
 
 # Local development overrides
 local.env
+local-*.tfvars
 
 # Secrets
 secrets/
+*.pem
+*.p12
+*.key
+*.cer
+*.crt
+*.p7b
+*.p7s
+
+# Terraform
+## Local .terraform directories
+**/.terraform/*
+
+## .tfstate files
+*.tfstate
+*.tfstate.*
+
+## Crash log files
+crash.log
+crash.*.log
+
+## Exclude all .tfvars files, which are likely to contain sensitive data
+*.tfvars
+*.tfvars.json
+
+## Ignore override files as they are usually used for local overrides
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+## Ignore CLI configuration files
+.terraformrc
+terraform.rc
+
+## Ignore lock files
+.terraform.lock.hcl
+
+## Ignore provider plugins
+.terraform/providers/
+.terraform/providers/*
+
+## Ignore plan output files
+*.tfplan
+*.plan
+
+## Ignore template override files
+*_override.tpl
+
+## Ignore .terraform directory in the root
+.terraform/
+
+# AWS CLI
+.aws/
+
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
