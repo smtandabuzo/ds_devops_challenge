@@ -1,0 +1,212 @@
+name: Terraform ECS Deployment
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform-ecs.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform-ecs.yml'
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: ds-devops-app
+  ECR_REGISTRY: 810772959397.dkr.ecr.us-east-1.amazonaws.com
+  CONTAINER_NAME: minio
+  TERRAFORM_VERSION: 1.5.0
+  TERRAFORM_WORKING_DIR: ./terraform
+
+jobs:
+  validate-terraform:
+    name: Validate Terraform
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TERRAFORM_VERSION }}
+        terraform_wrapper: false
+    
+    - name: Terraform Format
+      id: fmt
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        terraform fmt -check -recursive
+    
+    - name: Terraform Init
+      id: init
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        terraform init -backend=false
+    
+    - name: Terraform Validate
+      id: validate
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        terraform validate -no-color
+
+  test-terraform-plan:
+    name: Test Terraform Plan
+    needs: validate-terraform
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TERRAFORM_VERSION }}
+    
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Terraform Plan
+      id: plan
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        terraform init
+        terraform plan -input=false -var-file=terraform.tfvars
+    
+    - name: Upload Terraform Plan
+      uses: actions/upload-artifact@v3
+      with:
+        name: tfplan
+        path: ${{ env.TERRAFORM_WORKING_DIR }}/plan.tfplan
+        if-no-files-found: error
+
+  build-and-push-ecr:
+    name: Build and Push to ECR
+    needs: test-terraform-plan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    
+    - name: Build and push
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        file: ./Dockerfile  # Explicitly point to the Dockerfile
+        push: true
+        tags: |
+          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        build-args: |
+          BUILDKIT_INLINE_CACHE=1
+
+  deploy-terraform:
+    name: 'Deploy Terraform'
+    needs: [test-terraform-plan, build-and-push-ecr]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TERRAFORM_VERSION }}
+    
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Terraform Apply
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        terraform init
+        terraform apply -auto-approve -var-file=terraform.tfvars
+
+  test-deployment:
+    name: Test Deployment
+    needs: deploy-terraform
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Get ALB DNS
+      id: alb
+      run: |
+        ALB_DNS=$(aws elbv2 describe-load-balancers \
+          --names ds-devops-app-alb \
+          --query 'LoadBalancers[0].DNSName' \
+          --output text)
+        echo "ALB_DNS=$ALB_DNS" >> $GITHUB_OUTPUT
+    
+    - name: Run Smoke Tests
+      run: |
+        # Wait for services to be ready
+        sleep 30
+        
+        # Test MinIO Console (should return 200)
+        curl -I http://${{ steps.alb.outputs.ALB_DNS }}:9001
+        
+        # Test MinIO API (should return XML with ListAllMyBucketsResult)
+        curl -s http://${{ steps.alb.outputs.ALB_DNS }}:9000
+
+  notify:
+    name: Notify
+    needs: [deploy-terraform, test-deployment]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Send Slack notification
+      if: always()
+      uses: rtCamp/action-slack-notify@v2
+      env:
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        SLACK_COLOR: ${{ job.status == 'success' && '#36a64f' || '#ff0000' }}
+        SLACK_TITLE: 'Deployment ${{ job.status }} for ${{ github.repository }}'
+        SLACK_MESSAGE: |
+          *Workflow*: ${{ github.workflow }}
+          *Commit*: ${{ github.sha }}
+          *Status*: ${{ job.status }}
+          *Run URL*: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        SLACK_USERNAME: GitHub Actions
+        MSG_MINIMAL: true
