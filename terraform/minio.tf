@@ -4,6 +4,10 @@ resource "aws_launch_template" "ecs_launch_template" {
   image_id      = data.aws_ami.ecs_optimized.id
   instance_type = "t3.small"  # 2GB RAM for better performance
   key_name      = aws_key_pair.ec2_key_pair.key_name
+  
+  # Explicitly depend on the key pair
+  depends_on = [aws_key_pair.ec2_key_pair]
+  
   iam_instance_profile {
     name = aws_iam_instance_profile.ecs_agent.name
   }
