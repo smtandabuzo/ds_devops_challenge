@@ -196,17 +196,9 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Send Slack notification
+    - name: Print deployment status
       if: always()
-      uses: rtCamp/action-slack-notify@v2
-      env:
-        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
-        SLACK_COLOR: ${{ job.status == 'success' && '#36a64f' || '#ff0000' }}
-        SLACK_TITLE: 'Deployment ${{ job.status }} for ${{ github.repository }}'
-        SLACK_MESSAGE: |
-          *Workflow*: ${{ github.workflow }}
-          *Commit*: ${{ github.sha }}
-          *Status*: ${{ job.status }}
-          *Run URL*: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        SLACK_USERNAME: GitHub Actions
-        MSG_MINIMAL: true
+      run: |
+        echo "Deployment completed with status: ${{ needs.deploy-terraform.result || 'unknown' }}"
+        echo "Test status: ${{ needs.test-deployment.result || 'skipped' }}"
+        echo "Workflow URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"

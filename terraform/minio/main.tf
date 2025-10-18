@@ -100,9 +100,9 @@ resource "aws_efs_file_system" "minio_data" {
 }
 
 resource "aws_efs_mount_target" "minio_data" {
-  count          = length(aws_subnet.public)
-  file_system_id = aws_efs_file_system.minio_data.id
-  subnet_id      = aws_subnet.public[count.index].id
+  count           = length(aws_subnet.public)
+  file_system_id  = aws_efs_file_system.minio_data.id
+  subnet_id       = aws_subnet.public[count.index].id
   security_groups = [aws_security_group.efs.id]
 }
 

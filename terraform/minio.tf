@@ -2,12 +2,12 @@
 resource "aws_launch_template" "ecs_launch_template" {
   name_prefix   = "${var.app_name}-launch-template-"
   image_id      = data.aws_ami.ecs_optimized.id
-  instance_type = "t3.small"  # 2GB RAM for better performance
+  instance_type = "t3.small" # 2GB RAM for better performance
   key_name      = aws_key_pair.ec2_key_pair.key_name
-  
+
   # Explicitly depend on the key pair
   depends_on = [aws_key_pair.ec2_key_pair]
-  
+
   iam_instance_profile {
     name = aws_iam_instance_profile.ecs_agent.name
   }
@@ -125,9 +125,9 @@ resource "aws_iam_instance_profile" "ecs_agent" {
 resource "aws_autoscaling_group" "ecs_asg" {
   name                = "${var.app_name}-asg"
   vpc_zone_identifier = aws_subnet.public[*].id
-  min_size           = 1
-  max_size           = 1  # Keep it to 1 for free tier
-  desired_capacity   = 1
+  min_size            = 1
+  max_size            = 1 # Keep it to 1 for free tier
+  desired_capacity    = 1
 
   launch_template {
     id      = aws_launch_template.ecs_launch_template.id
@@ -228,9 +228,9 @@ resource "aws_security_group" "ecs_instances" {
 # MinIO EBS Volume
 resource "aws_ebs_volume" "minio_data" {
   availability_zone = data.aws_availability_zones.available.names[0]
-  size             = 20  # GB
-  type             = "gp3"
-  encrypted        = true
+  size              = 20 # GB
+  type              = "gp3"
+  encrypted         = true
 
   tags = {
     Name = "${var.app_name}-minio-data"
@@ -239,10 +239,10 @@ resource "aws_ebs_volume" "minio_data" {
 
 resource "aws_ecs_task_definition" "minio" {
   family                   = "minio"
-  network_mode             = "bridge"  # Using bridge mode for EC2 launch type
+  network_mode             = "bridge" # Using bridge mode for EC2 launch type
   requires_compatibilities = ["EC2"]
   cpu                      = 256
-  memory                   = 768  # Reduced to 768MB to fit t3.small
+  memory                   = 768 # Reduced to 768MB to fit t3.small
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_role.arn
 
@@ -306,7 +306,7 @@ resource "aws_ecs_service" "minio" {
 
   # Service discovery
   service_registries {
-    registry_arn = aws_service_discovery_service.minio.arn
+    registry_arn   = aws_service_discovery_service.minio.arn
     container_name = "minio"
     container_port = 9001
   }
@@ -332,12 +332,12 @@ resource "aws_ecs_service" "minio" {
 }
 
 resource "aws_lb_target_group" "minio" {
-  name        = "${var.app_name}-minio-tg-new-${substr(md5(timestamp()), 0, 5)}"  # Added 'new' to the name to avoid conflicts
+  name        = "${var.app_name}-minio-tg-new-${substr(md5(timestamp()), 0, 5)}" # Added 'new' to the name to avoid conflicts
   port        = 9001
   protocol    = "HTTP"
   target_type = "instance"
   vpc_id      = aws_vpc.main.id
-  
+
   health_check {
     enabled             = true
     path                = "/minio/health/live"

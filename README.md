@@ -1,6 +1,224 @@
-<img src="img/city_emblem.png" alt="City Logo"/>
+<img src="img/city_emblem.png" alt="City Logo" width="200"/>
 
-# City of Cape Town - Data Analytics Hub Devops Challenge
+# City of Cape Town - Data Analytics Hub DevOps Challenge
+
+## Architecture Overview
+
+```mermaid
+graph TD
+    A[Client] -->|HTTP/HTTPS| B[Application Load Balancer]
+    B -->|Port 5000| C[Flask Application]
+    B -->|Port 9001| D[MinIO Console]
+    C -->|S3 API| E[MinIO Storage]
+    
+    subgraph AWS ECS
+        C
+        D
+        E
+    end
+    
+    subgraph AWS Services
+        F[CloudWatch Logs]
+        G[ECR]
+    end
+    
+    C -->|Logs| F
+    D -->|Logs| F
+    G -->|Container Images| C
+```
+
+### Key Components
+- **Frontend**: Flask web application serving on port 5000
+- **Storage**: MinIO S3-compatible object storage
+- **Orchestration**: AWS ECS with Fargate
+- **Networking**: VPC with public and private subnets
+- **CI/CD**: GitHub Actions for automated testing and deployment
+- **Monitoring**: CloudWatch for logs and metrics
+
+## Environment Variables
+
+### Required Environment Variables
+```bash
+# AWS Configuration
+AWS_ACCESS_KEY_ID=your_aws_access_key
+AWS_SECRET_ACCESS_KEY=your_aws_secret_key
+AWS_REGION=us-east-1
+
+# Application Configuration
+APP_NAME=ds-devops-app
+ENVIRONMENT=production
+APP_PORT=5000
+
+# MinIO Configuration
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_PORT=9000
+MINIO_CONSOLE_PORT=9001
+
+# ECS Configuration
+ECS_CLUSTER=ds-devops-app-cluster
+ECS_SERVICE=ds-devops-app-service
+CONTAINER_NAME=ds-devops-app-container
+
+# ECR Configuration
+ECR_REPOSITORY=ds-devops-app
+ECR_REGISTRY=your-account-id.dkr.ecr.region.amazonaws.com
+```
+
+### Optional Environment Variables
+```bash
+# Terraform State
+TF_STATE_BUCKET=your-terraform-state-bucket
+TF_STATE_KEY=terraform.tfstate
+
+# Scaling Configuration
+DESIRED_COUNT=2
+MIN_CAPACITY=1
+MAX_CAPACITY=4
+
+# Health Check
+HEALTH_CHECK_PATH=/
+HEALTH_CHECK_INTERVAL=30
+HEALTH_CHECK_TIMEOUT=5
+HEALTH_CHECK_HEALTHY_THRESHOLD=2
+HEALTH_CHECK_UNHEALTHY_THRESHOLD=3
+```
+
+## Deployment Instructions
+
+### Prerequisites
+- AWS CLI configured with appropriate credentials
+- Terraform >= 1.0.0
+- Docker
+- Git
+
+### Local Development Setup
+
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd ds-devops-challenge
+   ```
+
+2. **Set up environment variables**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your configuration
+   nano .env
+   ```
+
+3. **Initialize Terraform**
+   ```bash
+   cd terraform
+   terraform init
+   ```
+
+4. **Review the execution plan**
+   ```bash
+   terraform plan
+   ```
+
+5. **Apply the configuration**
+   ```bash
+   terraform apply
+   ```
+
+### CI/CD Pipeline
+
+The GitHub Actions workflow (`.github/workflows/terraform-ecs.yml`) automates:
+
+1. **Linting and Validation**
+   - Terraform format and validation
+   - Python code linting
+
+2. **Build and Push**
+   - Builds Docker image
+   - Pushes to Amazon ECR
+
+3. **Deployment**
+   - Applies Terraform configuration
+   - Updates ECS service with new task definition
+
+4. **Verification**
+   - Runs smoke tests
+   - Verifies service health
+
+## Assumptions
+
+1. **Infrastructure as Code**
+   - All infrastructure is managed through Terraform
+   - State is stored in an S3 bucket with DynamoDB locking
+
+2. **Security**
+   - IAM roles follow the principle of least privilege
+   - Secrets are managed through AWS Secrets Manager or environment variables
+   - Network traffic is restricted using security groups and NACLs
+
+3. **Scalability**
+   - ECS service is configured for auto-scaling
+   - Application is stateless to support horizontal scaling
+
+4. **Monitoring**
+   - CloudWatch is used for logging and monitoring
+   - Basic health checks are implemented
+
+5. **Cost Optimization**
+   - Fargate is used to avoid managing EC2 instances
+   - Resources are tagged for cost allocation
+
+## Maintenance
+
+### Updating the Application
+1. Make your code changes
+2. Update the version in `variables.tf`
+3. Commit and push to trigger the CI/CD pipeline
+
+### Accessing Logs
+```bash
+# Application logs
+docker logs data-app
+
+# MinIO logs
+docker logs minio
+
+# Or view in AWS Console
+aws logs get-log-events \
+  --log-group-name /ecs/ds-devops-app \
+  --log-stream-name ecs/ds-devops-app-container/...
+```
+
+### Troubleshooting Common Issues
+
+#### Container Fails to Start
+1. Check ECS service events
+2. Verify container logs in CloudWatch
+3. Ensure the task has the correct IAM permissions
+
+#### Health Check Failures
+1. Verify the health check endpoint is accessible
+2. Check security group rules
+3. Verify the container is listening on the correct port
+
+#### Deployment Rollback
+```bash
+# Manually rollback to previous version
+aws ecs update-service \
+  --cluster ds-devops-app-cluster \
+  --service ds-devops-app-service \
+  --force-new-deployment
+```
+
+## Cleanup
+
+To destroy all resources:
+```bash
+cd terraform
+terraform destroy
+```
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 Welcome to the technical assessment for the Senior DevOps Engineer position at the City's Data Analytics Hub. We appreciate you taking the time to complete this challenge.
 

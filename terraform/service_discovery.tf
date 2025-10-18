@@ -28,12 +28,12 @@ resource "aws_service_discovery_service" "minio" {
 
   dns_config {
     namespace_id = aws_service_discovery_private_dns_namespace.private.id
-    
+
     dns_records {
       ttl  = 10
       type = "SRV"
     }
-    
+
     routing_policy = "MULTIVALUE"
   }
 
