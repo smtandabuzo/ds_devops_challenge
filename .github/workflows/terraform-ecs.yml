@@ -180,6 +180,35 @@ jobs:
           echo "Importing existing MinIO ECS Service"
           terraform import "aws_ecs_service.minio" "${SERVICE_ARN#*/}"
         fi
+        
+    - name: Import EC2 Key Pair if it exists
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        if aws ec2 describe-key-pairs --key-names "${{ env.ECR_REPOSITORY }}-ec2-key" > /dev/null 2>&1; then
+          echo "Importing existing EC2 Key Pair"
+          terraform import aws_key_pair.ec2_key_pair "${{ env.ECR_REPOSITORY }}-ec2-key"
+        fi
+        
+    - name: Import Load Balancer if it exists
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        ALB_ARN=$(aws elbv2 describe-load-balancers --names "${{ env.ECR_REPOSITORY }}-alb" --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
+        if [ ! -z "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
+          echo "Importing existing Application Load Balancer"
+          terraform import aws_lb.main "$ALB_ARN"
+        fi
+        
+    - name: Import S3 Bucket if it exists
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        BUCKET_NAME="${{ env.ECR_REPOSITORY }}-analytics-data-$(aws sts get-caller-identity --query Account --output text)"
+        if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
+          echo "Importing existing S3 Bucket"
+          terraform import aws_s3_bucket.analytics_data "$BUCKET_NAME"
+        fi
 
   build-and-push-ecr:
     name: Build and Push to ECR
