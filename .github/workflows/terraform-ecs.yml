@@ -850,6 +850,8 @@ jobs:
         # First, check if the resource is already in the state
         if terraform state show 'aws_service_discovery_private_dns_namespace.private' >/dev/null 2>&1; then
           echo "✅ Service Discovery Namespace is already in state"
+          # Get the namespace ID from the state
+          NAMESPACE_ID=$(terraform state show 'aws_service_discovery_private_dns_namespace.private' | grep 'id ' | awk '{print $3}' | tr -d '"')
         else
           # Try to get the namespace ID
           NAMESPACE_IDS=$(aws servicediscovery list-namespaces \
@@ -868,6 +870,8 @@ jobs:
                 if grep -q "already managed by Terraform" /tmp/ns_import_error; then
                   echo "⚠️  Service Discovery Namespace is already managed by Terraform"
                   echo "   Run 'terraform state list | grep aws_service_discovery_private_dns_namespace' to find the existing resource"
+                  # Get the existing namespace ID from the error message or state
+                  NAMESPACE_ID=$(terraform state list | grep 'aws_service_discovery_private_dns_namespace' | head -1 | cut -d'.' -f2)
                 else
                   cat /tmp/ns_import_error
                   echo "❌ Failed to import Service Discovery Namespace"
@@ -883,8 +887,9 @@ jobs:
             echo "ℹ️  No existing Service Discovery Namespace found"
           fi
         fi
-            
-          # Import Services
+        
+        # Import Services if we have a valid NAMESPACE_ID
+        if [ ! -z "$NAMESPACE_ID" ] && [ "$NAMESPACE_ID" != "None" ]; then
           for SERVICE_NAME in "app" "minio"; do
             SERVICE_ARN=$(aws servicediscovery list-services --filters "Name=NAMESPACE_ID,Values=$NAMESPACE_ID" \
               --query "Services[?Name=='$SERVICE_NAME'].Arn" --output text 2>/dev/null || echo "")
