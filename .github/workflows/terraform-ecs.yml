@@ -112,8 +112,8 @@ jobs:
         path: ${{ env.TERRAFORM_WORKING_DIR }}/plan.tfplan
         if-no-files-found: error
 
-  create-ecr-repo:
-    name: Create ECR Repository
+  import-resources:
+    name: Import Existing Resources
     needs: validate-terraform
     runs-on: ubuntu-latest
     
@@ -133,23 +133,57 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
         
-    - name: Create ECR Repository
+    - name: Initialize Terraform
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        terraform init
-        terraform apply -target=aws_ecr_repository.app -auto-approve \
-          -var="region=${{ env.AWS_REGION }}" \
-          -var="environment=production" \
-          -var="app_name=${{ env.ECR_REPOSITORY }}" \
-          -var="app_port=5000" \
-          -var="app_count=2" \
-          -var="minio_access_key=minioadmin" \
-          -var="minio_secret_key=minioadmin" \
-          -var="image_tag=latest"
+        terraform init -upgrade
+        
+    - name: Import ECR Repository if it exists
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        # Check if ECR repository exists
+        if aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} > /dev/null 2>&1; then
+          echo "Importing existing ECR repository"
+          terraform import aws_ecr_repository.app ${{ env.ECR_REPOSITORY }}
+        else
+          echo "ECR repository does not exist, it will be created"
+          terraform apply -target=aws_ecr_repository.app -auto-approve \
+            -var="region=${{ env.AWS_REGION }}" \
+            -var="environment=production" \
+            -var="app_name=${{ env.ECR_REPOSITORY }}" \
+            -var="app_port=5000" \
+            -var="app_count=2" \
+            -var="minio_access_key=minioadmin" \
+            -var="minio_secret_key=minioadmin" \
+            -var="image_tag=latest"
+        fi
+        
+    - name: Import Target Group if it exists
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        # Get the target group ARN if it exists
+        TG_ARN=$(aws elbv2 describe-target-groups --names "${{ env.ECR_REPOSITORY }}-tg" --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
+        if [ ! -z "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
+          echo "Importing existing Target Group"
+          terraform import aws_lb_target_group.app "$TG_ARN"
+        fi
+        
+    - name: Import Minio Service if it exists
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        # Get the MinIO service ARN if it exists
+        SERVICE_ARN=$(aws ecs describe-services --cluster "${{ env.ECR_REPOSITORY }}-cluster" --services "${{ env.ECR_REPOSITORY }}-minio-service" --query 'services[0].serviceArn' --output text 2>/dev/null || echo "")
+        if [ ! -z "$SERVICE_ARN" ] && [ "$SERVICE_ARN" != "None" ]; then
+          echo "Importing existing MinIO ECS Service"
+          terraform import "aws_ecs_service.minio" "${SERVICE_ARN#*/}"
+        fi
 
   build-and-push-ecr:
     name: Build and Push to ECR
-    needs: [validate-terraform, create-ecr-repo]  # Depend on both validation and ECR repo creation
+    needs: [validate-terraform, import-resources]  # Depend on both validation and resource import
     runs-on: ubuntu-latest
     
     steps:
