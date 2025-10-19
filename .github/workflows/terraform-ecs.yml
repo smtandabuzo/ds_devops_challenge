@@ -126,15 +126,29 @@ jobs:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
-    
+
+    - name: Check if ECR repository exists
+      id: check-ecr
+      run: |
+        if aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
+          echo "ecr_exists=true" >> $GITHUB_OUTPUT
+        else
+          echo "ecr_exists=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Create ECR repository if it doesn't exist
+      if: steps.check-ecr.outputs.ecr_exists == 'false'
+      run: |
+        aws ecr create-repository \
+          --repository-name ${{ env.ECR_REPOSITORY }} \
+          --region ${{ env.AWS_REGION }}
+
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v1
-    
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
-    
-    - name: Build and push
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
       uses: docker/build-push-action@v4
       with:
         context: .
@@ -145,12 +159,12 @@ jobs:
           ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+        build-args: |
           BUILDKIT_INLINE_CACHE=1
 
   deploy-terraform:
     name: Deploy Terraform
     needs: test-terraform-plan
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/submission/sazimtandabuzo'  # Run on main or feature branch
     runs-on: ubuntu-latest
     
     steps:
