@@ -92,39 +92,14 @@ jobs:
 
     - name: Terraform Plan
       id: plan
-      run: |
-        set -e  # Exit immediately if a command exits with a non-zero status
-        cd ${{ env.TERRAFORM_WORKING_DIR }}
-
-        # Initialize Terraform
-        echo "=== Initializing Terraform ==="
-        terraform init
-
-        # Create initial state if it doesn't exist
-        if [ ! -f "terraform.tfstate" ] && [ ! -f "terraform.tfstate.backup" ]; then
-            echo "=== Creating initial Terraform state ==="
-            terraform workspace new default || true
-            terraform workspace select default
-            terraform state pull > terraform.tfstate
-            echo "Initial empty state created."
-        fi
-
-        # Show current state
-        echo -e "\n=== Current Terraform State ==="
-        terraform state list || echo "State is empty, which is expected for a new environment"
-
-        # Run plan with all required variables
-        echo -e "\n=== Running Terraform Plan ==="
-        terraform plan -input=false -no-color \
-          -var="region=${{ env.AWS_REGION }}" \
-          -var="environment=production" \
-          -var="app_name=${{ env.ECR_REPOSITORY }}" \
-          -var="app_port=5000" \
-          -var="app_count=2" \
-          -var="minio_access_key=minioadmin" \
-          -var="minio_secret_key=minioadmin" \
-          -var="image_tag=latest" \
-          -out=plan.tfplan || { echo "Terraform plan failed"; exit 1; }
+      run: ./bin/terraform-init.sh
+      env:
+        AWS_REGION: ${{ env.AWS_REGION }}
+        ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+        GITHUB_OUTPUT: $GITHUB_OUTPUT
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
     - name: Upload Terraform Plan
       uses: actions/upload-artifact@v4
       with:
