@@ -8,8 +8,8 @@ data "aws_vpcs" "matching" {
 
 # Get details of the existing VPC if found
 data "aws_vpc" "existing" {
-  count  = var.use_existing_vpc && length(data.aws_vpcs.matching) > 0 && length(data.aws_vpcs.matching[0].ids) > 0 ? 1 : 0
-  id     = data.aws_vpcs.matching[0].ids[0]
+  count = var.use_existing_vpc && length(data.aws_vpcs.matching) > 0 && length(data.aws_vpcs.matching[0].ids) > 0 ? 1 : 0
+  id    = data.aws_vpcs.matching[0].ids[0]
 
   filter {
     name   = "tag:Name"
