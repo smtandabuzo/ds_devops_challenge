@@ -339,17 +339,6 @@ resource "aws_ecs_task_definition" "minio" {
   memory                   = 1024
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_role.arn
-  }
-}
-
-resource "aws_ecs_task_definition" "minio" {
-  family                   = "${var.app_name}-minio"
-  network_mode             = "bridge"
-  requires_compatibilities = ["EC2"]
-  cpu                      = 512
-  memory                   = 1024
-  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
-  task_role_arn            = aws_iam_role.ecs_task_role.arn
   
   container_definitions = jsonencode([
     {
