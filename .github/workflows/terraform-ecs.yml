@@ -179,7 +179,15 @@ jobs:
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         terraform init
-        terraform apply -auto-approve plan.tfplan
+        terraform apply -auto-approve \
+          -var="region=${{ env.AWS_REGION }}" \
+          -var="environment=production" \
+          -var="app_name=${{ env.ECR_REPOSITORY }}" \
+          -var="app_port=5000" \
+          -var="app_count=2" \
+          -var="minio_access_key=minioadmin" \
+          -var="minio_secret_key=minioadmin" \
+          -var="image_tag=latest"
 
   test-deployment:
     name: Test Deployment
