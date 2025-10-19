@@ -1,12 +1,12 @@
 # Try to find an existing VPC with the app name
 data "aws_vpc" "existing" {
   count = var.use_existing_vpc ? 1 : 0
-  
+
   filter {
     name   = "tag:Name"
     values = ["${var.app_name}-vpc"]
   }
-  
+
   filter {
     name   = "isDefault"
     values = ["false"]
@@ -32,7 +32,7 @@ locals {
     var.use_existing_vpc && length(data.aws_vpc.existing) > 0 ? data.aws_vpc.existing[0].id : null,
     length(aws_vpc.main) > 0 ? aws_vpc.main[0].id : null
   )
-  
+
   # This will cause a clear error if no VPC is available
   vpc_id_validation = local.vpc_id != null ? true : tobool("Failed to find or create a VPC. Please check your configuration.")
 }
