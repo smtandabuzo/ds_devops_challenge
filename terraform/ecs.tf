@@ -25,8 +25,8 @@ resource "aws_ecs_task_definition" "app" {
   family                   = "${var.app_name}-app"
   network_mode             = "bridge"
   requires_compatibilities = ["EC2"]
-  cpu                      = 256  # 0.25 vCPU
-  memory                   = 512  # 512MB
+  cpu                      = 256 # 0.25 vCPU
+  memory                   = 512 # 512MB
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_role.arn
 
@@ -80,13 +80,12 @@ resource "aws_ecs_service" "app" {
   enable_execute_command  = true
 
   # For EC2 launch type, tasks will use the EC2 instance's network settings
-
   load_balancer {
     target_group_arn = aws_lb_target_group.app.arn
     container_name   = "${var.app_name}-app" # Updated to match container name
     container_port   = var.app_port
   }
-  
+
   service_registries {
     registry_arn = aws_service_discovery_service.app.arn
   }
