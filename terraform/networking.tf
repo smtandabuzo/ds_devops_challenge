@@ -1,8 +1,3 @@
-# Get available availability zones
-data "aws_availability_zones" "available" {
-  state = "available"
-}
-
 # Try to find an existing VPC first
 data "aws_vpc" "existing" {
   count = var.use_existing_vpc ? 1 : 0
