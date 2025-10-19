@@ -393,13 +393,61 @@ jobs:
         
         # Delete IAM Roles and Policies
         for role in "ds-devops-app-ecs-task-execution-role" "ds-devops-app-ecs-task-role" "ds-devops-app-ecs-instance-role"; do
+          echo "Processing IAM Role: $role"
+          
+          # Check if role exists
+          if ! aws iam get-role --role-name "$role" --region "${{ env.AWS_REGION }}" >/dev/null 2>&1; then
+            echo "Role $role does not exist, skipping..."
+            continue
+          fi
+          
+          # For ECS instance role, handle instance profiles
+          if [[ "$role" == *"instance-role"* ]]; then
+            echo "Processing instance profile for role: $role"
+            # List all instance profiles that might be using this role
+            INSTANCE_PROFILES=$(aws iam list-instance-profiles-for-role --role-name "$role" --query "InstanceProfiles[*].InstanceProfileName" --output text --region "${{ env.AWS_REGION }}" 2>/dev/null || true)
+            
+            for profile in $INSTANCE_PROFILES; do
+              echo "Removing role from instance profile: $profile"
+              # Remove the role from the instance profile
+              aws iam remove-role-from-instance-profile \
+                --instance-profile-name "$profile" \
+                --role-name "$role" \
+                --region "${{ env.AWS_REGION }}" || true
+                
+              # Delete the instance profile if it's no longer needed
+              echo "Deleting instance profile: $profile"
+              aws iam delete-instance-profile \
+                --instance-profile-name "$profile" \
+                --region "${{ env.AWS_REGION }}" || true
+            done
+          fi
+          
+          # Detach all managed policies
           echo "Detaching policies from IAM Role: $role"
-          for policy_arn in $(aws iam list-attached-role-policies --role-name $role --query "AttachedPolicies[].PolicyArn" --output text --region ${{ env.AWS_REGION }} 2>/dev/null || true); do
-            aws iam detach-role-policy --role-name $role --policy-arn $policy_arn --region ${{ env.AWS_REGION }} || true
+          for policy_arn in $(aws iam list-attached-role-policies --role-name "$role" --query "AttachedPolicies[].PolicyArn" --output text --region "${{ env.AWS_REGION }}" 2>/dev/null || true); do
+            echo "Detaching policy: $policy_arn"
+            aws iam detach-role-policy \
+              --role-name "$role" \
+              --policy-arn "$policy_arn" \
+              --region "${{ env.AWS_REGION }}" || true
           done
           
+          # Delete inline policies
+          echo "Deleting inline policies for role: $role"
+          for policy_name in $(aws iam list-role-policies --role-name "$role" --query "PolicyNames" --output text --region "${{ env.AWS_REGION }}" 2>/dev/null || true); do
+            echo "Deleting inline policy: $policy_name"
+            aws iam delete-role-policy \
+              --role-name "$role" \
+              --policy-name "$policy_name" \
+              --region "${{ env.AWS_REGION }}" || true
+          done
+          
+          # Finally, delete the role
           echo "Deleting IAM Role: $role"
-          aws iam delete-role --role-name $role --region ${{ env.AWS_REGION }} || true
+          aws iam delete-role \
+            --role-name "$role" \
+            --region "${{ env.AWS_REGION }}" || echo "Failed to delete role $role, continuing..."
         done
         
         # Delete IAM Policy
