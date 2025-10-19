@@ -1,6 +1,15 @@
-# Try to find an existing VPC with the app name
-data "aws_vpc" "existing" {
+# Find all VPCs with the app name
+data "aws_vpcs" "matching" {
   count = var.use_existing_vpc ? 1 : 0
+  tags = {
+    Name = "${var.app_name}-vpc"
+  }
+}
+
+# Get details of the existing VPC if found
+data "aws_vpc" "existing" {
+  count  = var.use_existing_vpc && length(data.aws_vpcs.matching) > 0 && length(data.aws_vpcs.matching[0].ids) > 0 ? 1 : 0
+  id     = data.aws_vpcs.matching[0].ids[0]
 
   filter {
     name   = "tag:Name"
@@ -11,19 +20,11 @@ data "aws_vpc" "existing" {
     name   = "isDefault"
     values = ["false"]
   }
-
-  # Don't fail if no VPC is found
-  lifecycle {
-    postcondition {
-      condition     = length(self.id) > 0 || !var.use_existing_vpc
-      error_message = "No VPC found with name ${var.app_name}-vpc. Set use_existing_vpc = false to create a new one."
-    }
-  }
 }
 
 # Create a new VPC if not using an existing one or if the existing one is not found
 resource "aws_vpc" "main" {
-  count                = var.use_existing_vpc && length(data.aws_vpc.existing) > 0 ? 0 : 1
+  count                = !var.use_existing_vpc || (length(data.aws_vpcs.matching) > 0 && length(data.aws_vpcs.matching[0].ids) == 0) ? 1 : 0
   cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
   enable_dns_support   = true
@@ -36,9 +37,13 @@ resource "aws_vpc" "main" {
 # Determine the VPC ID based on what's available
 locals {
   # Use existing VPC if found, otherwise use the newly created one
-  vpc_id = coalesce(
-    var.use_existing_vpc && length(data.aws_vpc.existing) > 0 ? data.aws_vpc.existing[0].id : null,
-    length(aws_vpc.main) > 0 ? aws_vpc.main[0].id : null
+  vpc_id = (
+    var.use_existing_vpc &&
+    length(data.aws_vpcs.matching) > 0 &&
+    length(data.aws_vpcs.matching[0].ids) > 0 &&
+    length(data.aws_vpc.existing) > 0 ?
+    data.aws_vpc.existing[0].id :
+    (length(aws_vpc.main) > 0 ? aws_vpc.main[0].id : null)
   )
 
   # This will cause a clear error if no VPC is available
