@@ -217,7 +217,7 @@ jobs:
     - name: Import Security Groups and Network ACLs
       id: security-import
       continue-on-error: true
-      needs: [vpc-import, subnets-import]
+      if: steps.vpc-import.outcome == 'success' && steps.subnets-import.outcome == 'success'
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         
@@ -324,7 +324,7 @@ jobs:
     - name: Import ECR Repository and Related Resources
       id: ecr-import
       continue-on-error: true
-      needs: [security-import]
+      if: steps.security-import.outcome == 'success' || steps.security-import.outcome == 'skipped'
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         
@@ -370,7 +370,7 @@ jobs:
     - name: Import S3 Bucket and Related Resources
       id: s3-import
       continue-on-error: true
-      needs: [ecr-import]
+      if: steps.ecr-import.outcome == 'success' || steps.ecr-import.outcome == 'skipped'
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         
@@ -436,7 +436,7 @@ jobs:
     - name: Import Service Discovery and Related Resources
       id: service-discovery-import
       continue-on-error: true
-      needs: [s3-import]
+      if: steps.s3-import.outcome == 'success' || steps.s3-import.outcome == 'skipped'
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         
