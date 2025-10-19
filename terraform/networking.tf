@@ -1,8 +1,34 @@
-# Try to find an existing VPC first
-data "aws_vpc" "existing" {
+# Try to find the most recently created VPC with the app name
+# This helps when multiple VPCs with similar names exist
+data "aws_vpcs" "matching" {
   count = var.use_existing_vpc ? 1 : 0
+
   tags = {
     Name = "${var.app_name}-vpc"
+  }
+}
+
+data "aws_vpc" "existing" {
+  count = var.use_existing_vpc ? 1 : 0
+  id    = var.use_existing_vpc ? data.aws_vpcs.matching[0].ids[0] : null
+
+  # Add additional safety filters
+  filter {
+    name   = "tag:Name"
+    values = ["${var.app_name}-vpc"]
+  }
+
+  filter {
+    name   = "isDefault"
+    values = ["false"]
+  }
+
+  # Ensure we're getting the most recent VPC if multiple exist
+  lifecycle {
+    postcondition {
+      condition     = self.id != ""
+      error_message = "No VPC found with name ${var.app_name}-vpc. Please create one or set use_existing_vpc = false"
+    }
   }
 }
 
