@@ -189,7 +189,13 @@ jobs:
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         if aws ec2 describe-key-pairs --key-names "${{ env.ECR_REPOSITORY }}-ec2-key" > /dev/null 2>&1; then
           echo "Importing existing EC2 Key Pair"
-          terraform import aws_key_pair.ec2_key_pair "${{ env.ECR_REPOSITORY }}-ec2-key"
+          # Check if already in state
+          if ! terraform state show aws_key_pair.ec2_key_pair > /dev/null 2>&1; then
+            terraform import aws_key_pair.ec2_key_pair "${{ env.ECR_REPOSITORY }}-ec2-key" || \
+            echo "Key pair already exists in state or import failed, continuing..."
+          else
+            echo "Key pair already exists in state"
+          fi
         fi
         
     - name: Import Load Balancer if it exists
@@ -199,7 +205,13 @@ jobs:
         ALB_ARN=$(aws elbv2 describe-load-balancers --names "${{ env.ECR_REPOSITORY }}-alb" --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
         if [ ! -z "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
           echo "Importing existing Application Load Balancer"
-          terraform import aws_lb.main "$ALB_ARN"
+          # Check if already in state
+          if ! terraform state show aws_lb.main > /dev/null 2>&1; then
+            terraform import aws_lb.main "$ALB_ARN" || \
+            echo "Load balancer already exists in state or import failed, continuing..."
+          else
+            echo "Load balancer already exists in state"
+          fi
         fi
         
     - name: Import VPC if it exists
@@ -246,7 +258,12 @@ jobs:
             
           if [ ! -z "$ALB_SG_ID" ] && [ "$ALB_SG_ID" != "None" ]; then
             echo "Importing ALB Security Group"
-            terraform import aws_security_group.alb $ALB_SG_ID
+            if ! terraform state show "aws_security_group.alb" > /dev/null 2>&1; then
+              terraform import aws_security_group.alb $ALB_SG_ID || \
+              echo "ALB Security Group already exists in state or import failed, continuing..."
+            else
+              echo "ALB Security Group already exists in state"
+            fi
           fi
           
           # Import ECS Instances Security Group
@@ -256,7 +273,12 @@ jobs:
             
           if [ ! -z "$ECS_SG_ID" ] && [ "$ECS_SG_ID" != "None" ]; then
             echo "Importing ECS Instances Security Group"
-            terraform import aws_security_group.ecs_instances $ECS_SG_ID
+            if ! terraform state show "aws_security_group.ecs_instances" > /dev/null 2>&1; then
+              terraform import aws_security_group.ecs_instances $ECS_SG_ID || \
+              echo "ECS Instances Security Group already exists in state or import failed, continuing..."
+            else
+              echo "ECS Instances Security Group already exists in state"
+            fi
           fi
           
           # Import ECS Service Security Group if it exists
@@ -266,10 +288,166 @@ jobs:
             
           if [ ! -z "$ECS_SERVICE_SG_ID" ] && [ "$ECS_SERVICE_SG_ID" != "None" ]; then
             echo "Importing ECS Service Security Group"
-            terraform import aws_security_group.ecs_service $ECS_SERVICE_SG_ID
+            if ! terraform state show "aws_security_group.ecs_service" > /dev/null 2>&1; then
+              terraform import aws_security_group.ecs_service $ECS_SERVICE_SG_ID || \
+              echo "ECS Service Security Group already exists in state or import failed, continuing..."
+            else
+              echo "ECS Service Security Group already exists in state"
+            fi
           fi
         fi
         
+    - name: Import All Remaining Resources
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        
+        # 1. IAM Resources
+        echo "=== Importing IAM Resources ==="
+        
+        # IAM Policy for S3 Access
+        POLICY_NAME="${{ env.ECR_REPOSITORY }}-analytics-bucket-access"
+        if aws iam get-policy --policy-arn "arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/$POLICY_NAME" > /dev/null 2>&1; then
+          echo "Importing IAM Policy: $POLICY_NAME"
+          terraform import "aws_iam_policy.analytics_bucket_access" "$POLICY_NAME" || \
+            echo "IAM Policy import failed or already exists, continuing..."
+        fi
+        
+        # IAM Roles
+        for ROLE_NAME in \
+          "${{ env.ECR_REPOSITORY }}-ecs-task-execution-role" \
+          "${{ env.ECR_REPOSITORY }}-ecs-task-role" \
+          "${{ env.ECR_REPOSITORY }}-ecs-instance-role"; do
+          if aws iam get-role --role-name "$ROLE_NAME" > /dev/null 2>&1; then
+            echo "Importing IAM Role: $ROLE_NAME"
+            terraform import "aws_iam_role.${ROLE_NAME//-/_}" "$ROLE_NAME" || \
+              echo "Failed to import IAM Role $ROLE_NAME, continuing..."
+          fi
+        done
+        
+        # 2. ECS Resources
+        echo "\n=== Importing ECS Resources ==="
+        
+        # ECS Cluster
+        if aws ecs describe-clusters --clusters "${{ env.ECR_REPOSITORY }}-cluster" --query 'clusters[0].status' --output text 2>/dev/null | grep -q 'ACTIVE'; then
+          echo "Importing ECS Cluster..."
+          terraform import aws_ecs_cluster.main "${{ env.ECR_REPOSITORY }}-cluster" || \
+            echo "ECS Cluster import failed or already exists, continuing..."
+        fi
+        
+        # ECS Task Definitions
+        for TASK_DEF in "app" "minio"; do
+          TASK_ARN=$(aws ecs list-task-definitions --family-prefix "${{ env.ECR_REPOSITORY }}-$TASK_DEF" --query 'taskDefinitionArns[0]' --output text 2>/dev/null || echo "")
+          if [ ! -z "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ]; then
+            echo "Importing ECS Task Definition: $TASK_ARN"
+            terraform import "aws_ecs_task_definition.$TASK_DEF" "$TASK_ARN" || \
+              echo "Failed to import ECS Task Definition $TASK_DEF, continuing..."
+          fi
+        done
+        
+        # 3. EC2 & Auto Scaling
+        echo "\n=== Importing EC2 & Auto Scaling Resources ==="
+        
+        # Launch Template
+        LAUNCH_TEMPLATE_NAME=$(aws ec2 describe-launch-templates \
+          --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-launch-template-*" \
+          --query 'LaunchTemplates[0].LaunchTemplateName' --output text 2>/dev/null || echo "")
+        if [ ! -z "$LAUNCH_TEMPLATE_NAME" ] && [ "$LAUNCH_TEMPLATE_NAME" != "None" ]; then
+          echo "Importing Launch Template: $LAUNCH_TEMPLATE_NAME"
+          terraform import "aws_launch_template.ecs_launch_template[0]" "$LAUNCH_TEMPLATE_NAME" || \
+            echo "Launch Template import failed or already exists, continuing..."
+        fi
+        
+        # Auto Scaling Group
+        ASG_NAME=$(aws autoscaling describe-auto-scaling-groups \
+          --query "AutoScalingGroups[?contains(Tags[?Key=='Name'].Value, '${{ env.ECR_REPOSITORY }}-asg')].AutoScalingGroupName" \
+          --output text 2>/dev/null | head -n1 || echo "")
+        if [ ! -z "$ASG_NAME" ] && [ "$ASG_NAME" != "None" ]; then
+          echo "Importing Auto Scaling Group: $ASG_NAME"
+          terraform import "aws_autoscaling_group.ecs_asg[0]" "$ASG_NAME" || \
+            echo "Auto Scaling Group import failed or already exists, continuing..."
+        fi
+        
+        # 4. S3 Resources
+        echo "\n=== Importing S3 Resources ==="
+        BUCKET_NAME="${{ env.ECR_REPOSITORY }}-analytics-data-$(aws sts get-caller-identity --query Account --output text)"
+        if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
+          echo "Importing S3 Bucket: $BUCKET_NAME"
+          terraform import "aws_s3_bucket.analytics_data" "$BUCKET_NAME" || \
+            echo "S3 Bucket import failed or already exists, continuing..."
+            
+          echo "Importing S3 Bucket Versioning..."
+          terraform import "aws_s3_bucket_versioning.analytics_data_versioning[0]" "$BUCKET_NAME" || \
+            echo "S3 Bucket Versioning import failed or already exists, continuing..."
+            
+          echo "Importing S3 Bucket Encryption..."
+          terraform import "aws_s3_bucket_server_side_encryption_configuration.analytics_data_encryption[0]" "$BUCKET_NAME" || \
+            echo "S3 Bucket Encryption import failed or already exists, continuing..."
+        fi
+        
+        # 5. Load Balancer Resources
+        echo "\n=== Importing Load Balancer Resources ==="
+        
+        # ALB
+        ALB_ARN=$(aws elbv2 describe-load-balancers --names "${{ env.ECR_REPOSITORY }}-alb" --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
+        if [ ! -z "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
+          echo "Importing Application Load Balancer..."
+          terraform import "aws_lb.main" "$ALB_ARN" || \
+            echo "ALB import failed or already exists, continuing..."
+            
+          # ALB Listeners
+          LISTENER_ARN=$(aws elbv2 describe-listeners --load-balancer-arn "$ALB_ARN" --query 'Listeners[0].ListenerArn' --output text 2>/dev/null || echo "")
+          if [ ! -z "$LISTENER_ARN" ] && [ "$LISTENER_ARN" != "None" ]; then
+            echo "Importing ALB Listener..."
+            terraform import "aws_lb_listener.http_forward" "$LISTENER_ARN" || \
+              echo "ALB Listener import failed or already exists, continuing..."
+          fi
+        fi
+        
+        # Target Groups
+        for TG_NAME in "${{ env.ECR_REPOSITORY }}-tg" "${{ env.ECR_REPOSITORY }}-minio-tg"; do
+          TG_ARN=$(aws elbv2 describe-target-groups --names "$TG_NAME" --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
+          if [ ! -z "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
+            echo "Importing Target Group: $TG_NAME"
+            terraform import "aws_lb_target_group.${TG_NAME##*-}" "$TG_ARN" || \
+              echo "Target Group $TG_NAME import failed or already exists, continuing..."
+          fi
+        done
+        
+        # 6. Service Discovery
+        echo "\n=== Importing Service Discovery Resources ==="
+        NAMESPACE_IDS=$(aws servicediscovery list-namespaces \
+          --query "Namespaces[?Name=='${{ env.ECR_REPOSITORY }}.local' && Type=='DNS_PRIVATE'].Id" \
+          --output text 2>/dev/null || echo "")
+          
+        if [ ! -z "$NAMESPACE_IDS" ] && [ "$NAMESPACE_IDS" != "None" ]; then
+          NAMESPACE_ID=$(echo "$NAMESPACE_IDS" | head -n1 | tr -d '[:space:]')
+          echo "Importing Service Discovery Namespace: $NAMESPACE_ID"
+          terraform import "aws_service_discovery_private_dns_namespace.private" "$NAMESPACE_ID" || \
+            echo "Service Discovery Namespace import failed or already exists, continuing..."
+            
+          # Import Services
+          for SERVICE_NAME in "app" "minio"; do
+            SERVICE_ARN=$(aws servicediscovery list-services --filters "Name=NAMESPACE_ID,Values=$NAMESPACE_ID" \
+              --query "Services[?Name=='$SERVICE_NAME'].Arn" --output text 2>/dev/null || echo "")
+            if [ ! -z "$SERVICE_ARN" ] && [ "$SERVICE_ARN" != "None" ]; then
+              echo "Importing Service Discovery Service: $SERVICE_NAME"
+              terraform import "aws_service_discovery_service.$SERVICE_NAME" "$NAMESPACE_ID/$SERVICE_NAME" || \
+                echo "Service Discovery Service $SERVICE_NAME import failed or already exists, continuing..."
+            fi
+          done
+        fi
+        
+        # 7. CloudWatch Logs
+        echo "\n=== Importing CloudWatch Log Groups ==="
+        for LOG_GROUP in "/ecs/${{ env.ECR_REPOSITORY }}" "/ecs/${{ env.ECR_REPOSITORY }}-minio"; do
+          if aws logs describe-log-groups --log-group-name-prefix "$LOG_GROUP" --query 'logGroups[].logGroupName' --output text | grep -q "$LOG_GROUP"; then
+            echo "Importing CloudWatch Log Group: $LOG_GROUP"
+            terraform import "aws_cloudwatch_log_group.${LOG_GROUP##*/}" "$LOG_GROUP" || \
+              echo "CloudWatch Log Group $LOG_GROUP import failed or already exists, continuing..."
+          fi
+        done
+
     - name: Import IAM Roles and Policies if they exist
       continue-on-error: true
       run: |
@@ -279,23 +457,50 @@ jobs:
         TASK_EXEC_ROLE_NAME="${{ env.ECR_REPOSITORY }}-ecs-task-execution-role"
         if aws iam get-role --role-name $TASK_EXEC_ROLE_NAME > /dev/null 2>&1; then
           echo "Importing ECS Task Execution Role"
-          terraform import aws_iam_role.ecs_task_execution_role $TASK_EXEC_ROLE_NAME
-          terraform import "aws_iam_role_policy_attachment.ecs_task_execution_role_policy[0]" "$TASK_EXEC_ROLE_NAME/arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+          if ! terraform state show "aws_iam_role.ecs_task_execution_role" > /dev/null 2>&1; then
+            terraform import aws_iam_role.ecs_task_execution_role $TASK_EXEC_ROLE_NAME || \
+            echo "Task Execution Role already exists in state or import failed, continuing..."
+          else
+            echo "Task Execution Role already exists in state"
+          fi
+          
+          # Import policy attachment if not already in state
+          if ! terraform state show "aws_iam_role_policy_attachment.ecs_task_execution_role_policy[0]" > /dev/null 2>&1; then
+            terraform import "aws_iam_role_policy_attachment.ecs_task_execution_role_policy[0]" \
+              "$TASK_EXEC_ROLE_NAME/arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy" || \
+              echo "Policy attachment already exists in state or import failed, continuing..."
+          fi
         fi
         
         # Import ECS Task Role
         TASK_ROLE_NAME="${{ env.ECR_REPOSITORY }}-ecs-task-role"
         if aws iam get-role --role-name $TASK_ROLE_NAME > /dev/null 2>&1; then
           echo "Importing ECS Task Role"
-          terraform import aws_iam_role.ecs_task_role $TASK_ROLE_NAME
+          if ! terraform state show "aws_iam_role.ecs_task_role" > /dev/null 2>&1; then
+            terraform import aws_iam_role.ecs_task_role $TASK_ROLE_NAME || \
+            echo "Task Role already exists in state or import failed, continuing..."
+          else
+            echo "Task Role already exists in state"
+          fi
         fi
         
         # Import ECS Instance Role if it exists
         INSTANCE_ROLE_NAME="${{ env.ECR_REPOSITORY }}-ecs-instance-role"
         if aws iam get-role --role-name $INSTANCE_ROLE_NAME > /dev/null 2>&1; then
           echo "Importing ECS Instance Role"
-          terraform import aws_iam_role.ecs_instance_role $INSTANCE_ROLE_NAME
-          terraform import "aws_iam_role_policy_attachment.ecs_instance_role[0]" "$INSTANCE_ROLE_NAME/arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+          if ! terraform state show "aws_iam_role.ecs_instance_role" > /dev/null 2>&1; then
+            terraform import aws_iam_role.ecs_instance_role $INSTANCE_ROLE_NAME || \
+            echo "Instance Role already exists in state or import failed, continuing..."
+          else
+            echo "Instance Role already exists in state"
+          fi
+          
+          # Import policy attachment if not already in state
+          if ! terraform state show "aws_iam_role_policy_attachment.ecs_instance_role[0]" > /dev/null 2>&1; then
+            terraform import "aws_iam_role_policy_attachment.ecs_instance_role[0]" \
+              "$INSTANCE_ROLE_NAME/arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role" || \
+              echo "Instance Role policy attachment already exists in state or import failed, continuing..."
+          fi
         fi
         
     - name: Import ECS Cluster and Services if they exist
@@ -700,27 +905,38 @@ jobs:
           terraform import aws_s3_bucket.analytics_data "$BUCKET_NAME" || echo "S3 Bucket import failed or already exists"
         fi
         
-        # Import Service Discovery Namespace if it exists - handle multiple namespaces
-        NAMESPACE_IDS=$(aws servicediscovery list-namespaces \
-          --query "Namespaces[?Name=='${{ env.ECR_REPOSITORY }}.local' && Type=='DNS_PRIVATE'].Id" \
-          --output text 2>/dev/null || echo "")
-          
-        if [ ! -z "$NAMESPACE_IDS" ] && [ "$NAMESPACE_IDS" != "None" ]; then
-          # Take only the first matching namespace
-          NAMESPACE_ID=$(echo "$NAMESPACE_IDS" | head -n1 | tr -d '[:space:]')
-          echo "Importing Service Discovery Namespace: $NAMESPACE_ID"
-          
-          # Get the VPC ID for the namespace association
-          VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
-          
-          if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
-            echo "Importing with VPC association: $VPC_ID"
-            terraform import "aws_service_discovery_private_dns_namespace.private" "$NAMESPACE_ID" || \
+        # First, check if Service Discovery Namespace is already in the state
+        if ! terraform state show "aws_service_discovery_private_dns_namespace.private" > /dev/null 2>&1; then
+          # Import Service Discovery Namespace if it exists - handle multiple namespaces
+          NAMESPACE_IDS=$(aws servicediscovery list-namespaces \
+            --query "Namespaces[?Name=='${{ env.ECR_REPOSITORY }}.local' && Type=='DNS_PRIVATE'].Id" \
+            --output text 2>/dev/null || echo "")
+            
+          if [ ! -z "$NAMESPACE_IDS" ] && [ "$NAMESPACE_IDS" != "None" ]; then
+            # Take only the first matching namespace
+            NAMESPACE_ID=$(echo "$NAMESPACE_IDS" | head -n1 | tr -d '[:space:]')
+            echo "Importing Service Discovery Namespace: $NAMESPACE_ID"
+            
+            # Get the VPC ID for the namespace association
+            VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+            
+            # Import the namespace
+            if terraform import "aws_service_discovery_private_dns_namespace.private" "$NAMESPACE_ID" 2>&1 | grep -q "Error: Cannot import non-existent remote object"; then
+              echo "Namespace doesn't exist in AWS, it will be created during apply"
+            elif [ $? -ne 0 ]; then
               echo "Failed to import Service Discovery Namespace, but continuing..."
-          else
-            terraform import "aws_service_discovery_private_dns_namespace.private" "$NAMESPACE_ID" || \
-              echo "Failed to import Service Discovery Namespace (no VPC), but continuing..."
+              
+              # If import failed due to existing hosted zone, try to find and import it
+              HOSTED_ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name "${{ env.ECR_REPOSITORY }}.local" --query 'HostedZones[?Config.PrivateZone==`true`].Id' --output text 2>/dev/null || echo "")
+              if [ ! -z "$HOSTED_ZONE_ID" ] && [ "$HOSTED_ZONE_ID" != "None" ]; then
+                echo "Found existing Route53 Private Hosted Zone: $HOSTED_ZONE_ID"
+                echo "You may need to manually clean up the existing hosted zone if it's causing conflicts."
+                echo "Continuing with the deployment..."
+              fi
+            fi
           fi
+        else
+          echo "Service Discovery Namespace already exists in state"
         fi
         
         echo "Running terraform apply with direct variables..."
