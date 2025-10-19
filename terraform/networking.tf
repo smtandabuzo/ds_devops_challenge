@@ -56,7 +56,7 @@ locals {
 
 # Find existing IGW if using existing VPC
 data "aws_internet_gateway" "existing" {
-  count  = var.use_existing_vpc ? 1 : 0
+  count = var.use_existing_vpc ? 1 : 0
   filter {
     name   = "attachment.vpc-id"
     values = [local.vpc_id]
@@ -82,7 +82,7 @@ locals {
 data "aws_route_tables" "existing_public" {
   count  = var.use_existing_vpc ? 1 : 0
   vpc_id = local.vpc_id
-  
+
   filter {
     name   = "tag:Name"
     values = ["${var.app_name}-public-rt"]
@@ -107,7 +107,7 @@ resource "aws_route_table" "public" {
 # Create route table associations for new subnets
 resource "aws_route_table_association" "public" {
   for_each = var.use_existing_vpc ? toset([]) : toset([for i, _ in aws_subnet.public : tostring(i)])
-  
+
   subnet_id      = aws_subnet.public[tonumber(each.key)].id
   route_table_id = aws_route_table.public[0].id
 }
