@@ -127,22 +127,6 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Check if ECR repository exists
-      id: check-ecr
-      run: |
-        if aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
-          echo "ecr_exists=true" >> $GITHUB_OUTPUT
-        else
-          echo "ecr_exists=false" >> $GITHUB_OUTPUT
-        fi
-
-    - name: Create ECR repository if it doesn't exist
-      if: steps.check-ecr.outputs.ecr_exists == 'false'
-      run: |
-        aws ecr create-repository \
-          --repository-name ${{ env.ECR_REPOSITORY }} \
-          --region ${{ env.AWS_REGION }}
-
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v1
