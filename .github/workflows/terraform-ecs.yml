@@ -178,6 +178,7 @@ jobs:
     name: Test Deployment
     needs: deploy-terraform
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/submission/sazimtandabuzo'
+    runs-on: ubuntu-latest
     
     outputs:
       alb_dns: ${{ steps.alb.outputs.ALB_DNS }}
