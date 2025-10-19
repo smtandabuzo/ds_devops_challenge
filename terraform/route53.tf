@@ -1,7 +1,7 @@
 # Route 53 Private Hosted Zone for service discovery
 resource "aws_route53_zone" "private" {
   name = "${var.app_name}.local"
-  
+
   vpc {
     vpc_id = local.vpc_id
   }
