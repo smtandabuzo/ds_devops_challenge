@@ -78,3 +78,42 @@ resource "aws_iam_role_policy_attachment" "ecs_task_s3_access" {
   role       = aws_iam_role.ecs_task_role.name
   policy_arn = aws_iam_policy.s3_access.arn
 }
+
+# IAM Role for EC2 Instances
+resource "aws_iam_role" "ecs_instance_role" {
+  name = "${var.app_name}-ecs-instance-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = ["ec2.amazonaws.com", "ecs-tasks.amazonaws.com"]
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "${var.app_name}-ecs-instance-role"
+  }
+}
+
+# Attach necessary policies to the ECS instance role
+resource "aws_iam_role_policy_attachment" "ecs_ec2_role" {
+  role       = aws_iam_role.ecs_instance_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_ec2_cloudwatch_policy" {
+  role       = aws_iam_role.ecs_instance_role.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+}
+
+# IAM Instance Profile for ECS Instances
+resource "aws_iam_instance_profile" "ecs_agent" {
+  name = "${var.app_name}-ecs-agent"
+  role = aws_iam_role.ecs_instance_role.name
+}

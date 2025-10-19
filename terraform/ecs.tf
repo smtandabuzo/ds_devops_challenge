@@ -22,11 +22,11 @@ resource "aws_cloudwatch_log_group" "app" {
 }
 
 resource "aws_ecs_task_definition" "app" {
-  family                   = "${var.app_name}-app" # Changed to avoid conflict with MinIO
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  cpu                      = var.fargate_cpu
-  memory                   = var.fargate_memory
+  family                   = "${var.app_name}-app"
+  network_mode             = "bridge"
+  requires_compatibilities = ["EC2"]
+  cpu                      = 256  # 0.25 vCPU
+  memory                   = 512  # 512MB
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_role.arn
 
@@ -74,16 +74,14 @@ resource "aws_ecs_service" "app" {
   cluster                 = aws_ecs_cluster.main.id
   task_definition         = aws_ecs_task_definition.app.arn
   desired_count           = var.app_count
-  launch_type             = "FARGATE"
   enable_ecs_managed_tags = true
   propagate_tags          = "SERVICE"
   enable_execute_command  = true
 
-  network_configuration {
-    security_groups  = [aws_security_group.ecs_tasks.id]
-    subnets          = aws_subnet.public.*.id
-    assign_public_ip = true
-  }
+  launch_type = "EC2"
+  
+  # For EC2 launch type, we don't need to specify network configuration
+  # as it will use the EC2 instance's network settings
 
   load_balancer {
     target_group_arn = aws_lb_target_group.app.arn
