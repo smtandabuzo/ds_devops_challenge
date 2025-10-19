@@ -200,6 +200,16 @@ jobs:
           terraform import aws_lb.main "$ALB_ARN"
         fi
         
+    - name: Import VPC if it exists
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+        if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+          echo "Importing existing VPC"
+          terraform import aws_vpc.main "$VPC_ID"
+        fi
+        
     - name: Import S3 Bucket if it exists
       continue-on-error: true
       run: |
