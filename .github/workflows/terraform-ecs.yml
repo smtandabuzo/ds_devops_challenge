@@ -120,7 +120,7 @@ jobs:
 
   build-and-push-ecr:
     name: Build and Push to ECR
-    needs: test-terraform-plan
+    needs: deploy-terraform
     runs-on: ubuntu-latest
     
     steps:
@@ -157,7 +157,7 @@ jobs:
           BUILDKIT_INLINE_CACHE=1
 
   deploy-terraform:
-    name: Deploy Terraform
+    name: Deploy Terraform (Creates ECR Repo & Infrastructure)
     needs: test-terraform-plan
     runs-on: ubuntu-latest
     
@@ -183,79 +183,44 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
     
-    - name: Force Cleanup Before Apply
+    - name: Import Existing Resources (if any)
       run: |
-        # Set AWS region
-        export AWS_PAGER=""
-        export AWS_REGION=${{ env.AWS_REGION }}
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
         
-        # Delete ECS Service if it exists
-        echo "Deleting ECS Service if it exists..."
-        aws ecs update-service \
-          --cluster ${{ env.ECR_REPOSITORY }} \
-          --service ${{ env.ECR_REPOSITORY }} \
-          --desired-count 0 \
-          --region ${{ env.AWS_REGION }} || true
+        # Initialize Terraform
+        terraform init -upgrade
+        
+        # Function to import resource if it exists
+        import_resource() {
+          local resource_type=$1
+          local resource_name=$2
+          local resource_id=$3
           
-        aws ecs delete-service \
-          --cluster ${{ env.ECR_REPOSITORY }} \
-          --service ${{ env.ECR_REPOSITORY }} \
-          --region ${{ env.AWS_REGION }} || true
-        
-        # Delete ECR Repository
-        echo "Deleting ECR Repository..."
-        aws ecr delete-repository \
-          --repository-name ${{ env.ECR_REPOSITORY }} \
-          --force \
-          --region ${{ env.AWS_REGION }} || true
-        
-        # Delete CloudWatch Log Group
-        echo "Deleting CloudWatch Log Group..."
-        aws logs delete-log-group \
-          --log-group-name "/ecs/${{ env.ECR_REPOSITORY }}" \
-          --region ${{ env.AWS_REGION }} || true
-        
-        # Delete IAM Roles and Policies
-        for role in "ds-devops-app-ecs-task-execution-role" "ds-devops-app-ecs-task-role" "ds-devops-app-ecs-instance-role"; do
-          echo "Detaching policies from IAM Role: $role"
-          for policy_arn in $(aws iam list-attached-role-policies --role-name $role --query "AttachedPolicies[].PolicyArn" --output text --region ${{ env.AWS_REGION }} 2>/dev/null || true); do
-            aws iam detach-role-policy --role-name $role --policy-arn $policy_arn --region ${{ env.AWS_REGION }} || true
-          done
+          if [ -z "$resource_id" ]; then
+            echo "No $resource_type ID provided, skipping import"
+            return 0
+          fi
           
-          echo "Deleting IAM Role: $role"
-          aws iam delete-role --role-name $role --region ${{ env.AWS_REGION }} || true
-        done
+          echo "Attempting to import $resource_type: $resource_id"
+          terraform import -auto-approve "$resource_type.$resource_name" "$resource_id" 2>/dev/null || \
+            echo "Failed to import $resource_type $resource_id, will create if needed"
+        }
         
-        # Delete IAM Policy
-        echo "Deleting IAM Policy..."
-        aws iam delete-policy \
-          --policy-arn "arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/ds-devops-app-s3-access" \
-          --region ${{ env.AWS_REGION }} || true
+        # Get AWS account ID
+        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
         
-        # Delete EC2 Key Pair
-        echo "Deleting EC2 Key Pair..."
-        aws ec2 delete-key-pair \
-          --key-name ds-devops-ec2-key \
-          --region ${{ env.AWS_REGION }} || true
+        # Import ECR repository if it exists
+        ECR_REPO=$(aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} --query 'repositories[0].repositoryArn' --output text 2>/dev/null || true)
+        import_resource "aws_ecr_repository.app" "app" "${ECR_REPO##*/}"
+    
+    - name: Terraform Initialize
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        terraform init -upgrade
     
     - name: Terraform Apply
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        # Initialize with -upgrade to ensure latest providers
-        terraform init -upgrade
-        
-        # First destroy any existing resources
-        terraform destroy -auto-approve \
-          -var="region=${{ env.AWS_REGION }}" \
-          -var="environment=production" \
-          -var="app_name=${{ env.ECR_REPOSITORY }}" \
-          -var="app_port=5000" \
-          -var="app_count=2" \
-          -var="minio_access_key=minioadmin" \
-          -var="minio_secret_key=minioadmin" \
-          -var="image_tag=latest" || true
-        
-        # Then apply the new configuration
         terraform apply -auto-approve \
           -var="region=${{ env.AWS_REGION }}" \
           -var="environment=production" \
