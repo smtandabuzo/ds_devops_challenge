@@ -592,17 +592,7 @@ jobs:
       continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        ALB_ARN=$(aws elbv2 describe-load-balancers --names "${{ env.ECR_REPOSITORY }}-alb" --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
-        if [ ! -z "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
-          echo "Importing existing Application Load Balancer"
-          # Check if already in state
-          if ! terraform state show aws_lb.main > /dev/null 2>&1; then
-            terraform import aws_lb.main "$ALB_ARN" || \
-            echo "Load balancer already exists in state or import failed, continuing..."
-          else
-            echo "Load balancer already exists in state"
-          fi
-        fi
+        # Skip ALB import here as it's handled in the Import All Remaining Resources section
         
     - name: Import VPC if it exists
       continue-on-error: true
@@ -697,10 +687,15 @@ jobs:
         
         # IAM Policy for S3 Access
         POLICY_NAME="${{ env.ECR_REPOSITORY }}-analytics-bucket-access"
-        if aws iam get-policy --policy-arn "arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/$POLICY_NAME" > /dev/null 2>&1; then
-          echo "Importing IAM Policy: $POLICY_NAME"
-          terraform import "aws_iam_policy.analytics_bucket_access" "$POLICY_NAME" || \
+        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
+        
+        if aws iam get-policy --policy-arn "$POLICY_ARN" > /dev/null 2>&1; then
+          echo "Importing IAM Policy: $POLICY_ARN"
+          terraform import "aws_iam_policy.analytics_bucket_access" "$POLICY_ARN" || \
             echo "IAM Policy import failed or already exists, continuing..."
+        else
+          echo "IAM Policy $POLICY_NAME not found, it will be created"
         fi
         
         # IAM Roles
@@ -718,12 +713,7 @@ jobs:
         # 2. ECS Resources
         echo "\n=== Importing ECS Resources ==="
         
-        # ECS Cluster
-        if aws ecs describe-clusters --clusters "${{ env.ECR_REPOSITORY }}-cluster" --query 'clusters[0].status' --output text 2>/dev/null | grep -q 'ACTIVE'; then
-          echo "Importing ECS Cluster..."
-          terraform import aws_ecs_cluster.main "${{ env.ECR_REPOSITORY }}-cluster" || \
-            echo "ECS Cluster import failed or already exists, continuing..."
-        fi
+        # ECS Cluster - Skip import here as it's handled in the Import All Remaining Resources section
         
         # ECS Task Definitions
         for TASK_DEF in "app" "minio"; do
@@ -781,10 +771,22 @@ jobs:
         # ALB
         ALB_ARN=$(aws elbv2 describe-load-balancers --names "${{ env.ECR_REPOSITORY }}-alb" --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
         if [ ! -z "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
-          echo "Importing Application Load Balancer..."
-          terraform import "aws_lb.main" "$ALB_ARN" || \
-            echo "ALB import failed or already exists, continuing..."
-            
+          if ! terraform state show 'aws_lb.main' >/dev/null 2>&1; then
+            echo "Importing Application Load Balancer: $ALB_ARN"
+            if ! terraform import "aws_lb.main" "$ALB_ARN" 2>/tmp/alb_import_error; then
+              if grep -q "already managed by Terraform" /tmp/alb_import_error; then
+                echo "⚠️ ALB is already managed by Terraform under a different resource name"
+                echo "   Run 'terraform state list | grep $ALB_ARN' to find the existing resource"
+              else
+                cat /tmp/alb_import_error
+                echo "❌ Failed to import ALB"
+              fi
+              rm -f /tmp/alb_import_error
+            fi
+          else
+            echo "✅ ALB is already in state"
+          fi
+          
           # ALB Listeners
           LISTENER_ARN=$(aws elbv2 describe-listeners --load-balancer-arn "$ALB_ARN" --query 'Listeners[0].ListenerArn' --output text 2>/dev/null || echo "")
           if [ ! -z "$LISTENER_ARN" ] && [ "$LISTENER_ARN" != "None" ]; then
@@ -798,23 +800,70 @@ jobs:
         for TG_NAME in "${{ env.ECR_REPOSITORY }}-tg" "${{ env.ECR_REPOSITORY }}-minio-tg"; do
           TG_ARN=$(aws elbv2 describe-target-groups --names "$TG_NAME" --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
           if [ ! -z "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
-            echo "Importing Target Group: $TG_NAME"
-            terraform import "aws_lb_target_group.${TG_NAME##*-}" "$TG_ARN" || \
-              echo "Target Group $TG_NAME import failed or already exists, continuing..."
+            # Determine the correct resource name based on the target group name
+            if [[ "$TG_NAME" == *"minio"* ]]; then
+              RESOURCE_NAME="minio_tg"
+            else
+              RESOURCE_NAME="app_tg"
+            fi
+            
+            echo "Importing Target Group: $TG_NAME as $RESOURCE_NAME"
+            if terraform state show "aws_lb_target_group.$RESOURCE_NAME" >/dev/null 2>&1; then
+              echo "✅ Target Group $TG_NAME is already in state as $RESOURCE_NAME"
+            else
+              if ! terraform import "aws_lb_target_group.$RESOURCE_NAME" "$TG_ARN" 2>/tmp/tg_import_error; then
+                if grep -q "does not exist in the configuration" /tmp/tg_import_error; then
+                  echo "⚠️  Target Group $TG_NAME cannot be imported - resource '$RESOURCE_NAME' not found in configuration"
+                  echo "    Please make sure you have defined 'aws_lb_target_group.$RESOURCE_NAME' in your Terraform code"
+                else
+                  cat /tmp/tg_import_error
+                  echo "❌ Failed to import Target Group $TG_NAME"
+                fi
+                rm -f /tmp/tg_import_error
+              fi
+            fi
           fi
         done
         
         # 6. Service Discovery
         echo "\n=== Importing Service Discovery Resources ==="
-        NAMESPACE_IDS=$(aws servicediscovery list-namespaces \
-          --query "Namespaces[?Name=='${{ env.ECR_REPOSITORY }}.local' && Type=='DNS_PRIVATE'].Id" \
-          --output text 2>/dev/null || echo "")
-          
-        if [ ! -z "$NAMESPACE_IDS" ] && [ "$NAMESPACE_IDS" != "None" ]; then
-          NAMESPACE_ID=$(echo "$NAMESPACE_IDS" | head -n1 | tr -d '[:space:]')
-          echo "Importing Service Discovery Namespace: $NAMESPACE_ID"
-          terraform import "aws_service_discovery_private_dns_namespace.private" "$NAMESPACE_ID" || \
-            echo "Service Discovery Namespace import failed or already exists, continuing..."
+        
+        # First, check if the resource is already in the state
+        if terraform state show 'aws_service_discovery_private_dns_namespace.private' >/dev/null 2>&1; then
+          echo "✅ Service Discovery Namespace is already in state"
+        else
+          # Try to get the namespace ID
+          NAMESPACE_IDS=$(aws servicediscovery list-namespaces \
+            --query "Namespaces[?Name=='${{ env.ECR_REPOSITORY }}.local' && Type=='DNS_PRIVATE'].Id" \
+            --output text 2>/dev/null || echo "")
+            
+          if [ ! -z "$NAMESPACE_IDS" ] && [ "$NAMESPACE_IDS" != "None" ]; then
+            # Take the first namespace ID if multiple are found
+            NAMESPACE_ID=$(echo "$NAMESPACE_IDS" | head -n1 | tr -d '[:space:]' | cut -d'/' -f2)
+            
+            if [ ! -z "$NAMESPACE_ID" ]; then
+              echo "Importing Service Discovery Namespace: $NAMESPACE_ID"
+              
+              # Try importing with just the namespace ID (without VPC ID)
+              if ! terraform import "aws_service_discovery_private_dns_namespace.private" "$NAMESPACE_ID" 2>/tmp/ns_import_error; then
+                if grep -q "already managed by Terraform" /tmp/ns_import_error; then
+                  echo "⚠️  Service Discovery Namespace is already managed by Terraform"
+                  echo "   Run 'terraform state list | grep aws_service_discovery_private_dns_namespace' to find the existing resource"
+                else
+                  cat /tmp/ns_import_error
+                  echo "❌ Failed to import Service Discovery Namespace"
+                fi
+                rm -f /tmp/ns_import_error
+              else
+                echo "✅ Successfully imported Service Discovery Namespace"
+              fi
+            else
+              echo "⚠️  Could not determine Namespace ID for Service Discovery"
+            fi
+          else
+            echo "ℹ️  No existing Service Discovery Namespace found"
+          fi
+        fi
             
           # Import Services
           for SERVICE_NAME in "app" "minio"; do
@@ -901,8 +950,22 @@ jobs:
         # Import ECS Cluster
         CLUSTER_NAME="${{ env.ECR_REPOSITORY }}-cluster"
         if aws ecs describe-clusters --clusters $CLUSTER_NAME --query 'clusters[0].clusterArn' --output text 2>/dev/null | grep -q 'arn:aws:ecs:'; then
-          echo "Importing ECS Cluster"
-          terraform import aws_ecs_cluster.main $CLUSTER_NAME
+          # Check if ECS cluster is already in state
+          if ! terraform state show 'aws_ecs_cluster.main' >/dev/null 2>&1; then
+            echo "Importing ECS Cluster: $CLUSTER_NAME"
+            if ! terraform import aws_ecs_cluster.main $CLUSTER_NAME 2>/tmp/ecs_import_error; then
+              if grep -q "already managed by Terraform" /tmp/ecs_import_error; then
+                echo "⚠️  ECS Cluster is already managed by Terraform under a different resource name"
+                echo "   Run 'terraform state list | grep $CLUSTER_NAME' to find the existing resource"
+              else
+                cat /tmp/ecs_import_error
+                echo "❌ Failed to import ECS Cluster"
+              fi
+              rm -f /tmp/ecs_import_error
+            fi
+          else
+            echo "✅ ECS Cluster is already in state"
+          fi
           
           # Import ECS Services
           SERVICES=$(aws ecs list-services --cluster $CLUSTER_NAME --query 'serviceArns[*]' --output text 2>/dev/null || echo "")
@@ -929,14 +992,41 @@ jobs:
           ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name $ZONE_NAME --query 'HostedZones[?Config.PrivateZone==`true`].Id' --output text 2>/dev/null || echo "")
           
           if [ ! -z "$ZONE_ID" ] && [ "$ZONE_ID" != "None" ]; then
-            echo "Importing Route53 Private Hosted Zone"
-            terraform import aws_route53_zone.private "${ZONE_ID#/hostedzone/}"
-            
-            # Import VPC association
-            ASSOC_ID=$(aws route53 get-hosted-zone --id ${ZONE_ID#/hostedzone/} --query 'VPCs[?VPCId==`'$VPC_ID'`].VPCId' --output text 2>/dev/null || echo "")
-            if [ ! -z "$ASSOC_ID" ] && [ "$ASSOC_ID" != "None" ]; then
-              echo "Importing VPC association for Route53 zone"
-              terraform import "aws_route53_zone_association.private_vpc_assoc[0]" "${ZONE_ID#/hostedzone/}_$VPC_ID"
+            # Check if the Route53 zone resource exists in the configuration
+            if grep -q 'resource "aws_route53_zone" "private"' *.tf; then
+              echo "Importing Route53 Private Hosted Zone: ${ZONE_ID#/hostedzone/}"
+              if ! terraform import aws_route53_zone.private "${ZONE_ID#/hostedzone/}" 2>/tmp/route53_import_error; then
+                if grep -q "already managed by Terraform" /tmp/route53_import_error; then
+                  echo "⚠️  Route53 Zone is already managed by Terraform"
+                  echo "   Run 'terraform state list | grep aws_route53_zone' to find the existing resource"
+                else
+                  cat /tmp/route53_import_error
+                  echo "❌ Failed to import Route53 Zone"
+                fi
+                rm -f /tmp/route53_import_error
+              fi
+              
+              # Import VPC association if it exists in the configuration
+              if grep -q 'resource "aws_route53_zone_association" "private_vpc_assoc"' *.tf; then
+                ASSOC_ID=$(aws route53 get-hosted-zone --id ${ZONE_ID#/hostedzone/} --query 'VPCs[?VPCId==`'$VPC_ID'`].VPCId' --output text 2>/dev/null || echo "")
+                if [ ! -z "$ASSOC_ID" ] && [ "$ASSOC_ID" != "None" ]; then
+                  echo "Importing VPC association for Route53 zone"
+                  terraform import "aws_route53_zone_association.private_vpc_assoc[0]" "${ZONE_ID#/hostedzone/}_$VPC_ID" || \
+                    echo "Failed to import VPC association, continuing..."
+                fi
+              else
+                echo "⚠️  aws_route53_zone_association.private_vpc_assoc not found in configuration"
+                echo "   Add the resource to your Terraform configuration to import it"
+              fi
+            else
+              echo "⚠️  aws_route53_zone.private not found in configuration"
+              echo "   Add the following to your Terraform configuration to import this resource:"
+              echo "   resource \"aws_route53_zone\" \"private\" {"
+              echo "     name = \"${{ env.ECR_REPOSITORY }}.local\""
+              echo "     vpc {"
+              echo "       vpc_id = \"$VPC_ID\""
+              echo "     }"
+              echo "   }"
             fi
           fi
         fi
@@ -1221,10 +1311,11 @@ jobs:
           import_resource "aws_iam_policy.s3_access" "s3_access" "$POLICY_ARN"
         fi
         
-        # Import ECS cluster if it exists
-        ECS_CLUSTER=$(aws ecs describe-clusters --clusters "${{ env.ECR_REPOSITORY }}" --query 'clusters[0].clusterArn' --output text 2>/dev/null || true)
+        # Import ECS cluster if it exists (using the correct resource name)
+        ECS_CLUSTER=$(aws ecs describe-clusters --clusters "${{ env.ECR_REPOSITORY }}-cluster" --query 'clusters[0].clusterArn' --output text 2>/dev/null || echo "")
         if [ "$ECS_CLUSTER" != "None" ] && [ ! -z "$ECS_CLUSTER" ]; then
-          import_resource "aws_ecs_cluster.app" "app" "${{ env.ECR_REPOSITORY }}"
+          # This is handled in the main import section, so we'll skip it here
+          echo "ECS Cluster import is handled in the main import section"
         fi
     
     - name: Terraform Initialize
