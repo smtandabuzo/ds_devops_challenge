@@ -606,6 +606,7 @@ jobs:
             -var="minio_access_key=minioadmin" \
             -var="minio_secret_key=minioadmin" \
             -var="image_tag=latest"
+        fi
 
   test-deployment:
     name: Test Deployment
