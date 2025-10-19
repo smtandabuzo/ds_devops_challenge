@@ -212,6 +212,37 @@ jobs:
         # Import ECR repository if it exists
         ECR_REPO=$(aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} --query 'repositories[0].repositoryArn' --output text 2>/dev/null || true)
         import_resource "aws_ecr_repository.app" "app" "${ECR_REPO##*/}"
+        
+        # Import IAM roles if they exist
+        for role_name in "ds-devops-app-ecs-task-execution-role" "ds-devops-app-ecs-task-role" "ds-devops-app-ecs-instance-role"; do
+          ROLE_ARN=$(aws iam get-role --role-name "$role_name" --query 'Role.Arn' --output text 2>/dev/null || true)
+          if [ ! -z "$ROLE_ARN" ]; then
+            # Convert role name to Terraform resource name (replace hyphens with underscores)
+            TF_RESOURCE_NAME=$(echo "$role_name" | tr '-' '_')
+            import_resource "aws_iam_role.$TF_RESOURCE_NAME" "$TF_RESOURCE_NAME" "$role_name"
+            
+            # Import role policy attachments
+            POLICIES=$(aws iam list-attached-role-policies --role-name "$role_name" --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null || true)
+            for policy_arn in $POLICIES; do
+              POLICY_NAME=$(echo "$policy_arn" | awk -F'/' '{print $2}')
+              import_resource "aws_iam_role_policy_attachment.${TF_RESOURCE_NAME}_${POLICY_NAME}" \
+                "${TF_RESOURCE_NAME}_${POLICY_NAME}" \
+                "$role_name/$policy_arn"
+            done
+          fi
+        done
+        
+        # Import IAM policy if it exists
+        POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/ds-devops-app-s3-access"
+        if aws iam get-policy --policy-arn "$POLICY_ARN" >/dev/null 2>&1; then
+          import_resource "aws_iam_policy.s3_access" "s3_access" "$POLICY_ARN"
+        fi
+        
+        # Import ECS cluster if it exists
+        ECS_CLUSTER=$(aws ecs describe-clusters --clusters "${{ env.ECR_REPOSITORY }}" --query 'clusters[0].clusterArn' --output text 2>/dev/null || true)
+        if [ "$ECS_CLUSTER" != "None" ] && [ ! -z "$ECS_CLUSTER" ]; then
+          import_resource "aws_ecs_cluster.app" "app" "${{ env.ECR_REPOSITORY }}"
+        fi
     
     - name: Terraform Initialize
       run: |
