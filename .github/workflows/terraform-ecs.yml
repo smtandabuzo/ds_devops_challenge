@@ -405,11 +405,30 @@ jobs:
       continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        NAMESPACE_ID=$(aws servicediscovery list-namespaces --query "Namespaces[?Name=='${{ env.ECR_REPOSITORY }}.local'].Id" --output text 2>/dev/null || echo "")
+        
+        # Get the specific namespace for our application
+        NAMESPACE_ID=$(aws servicediscovery list-namespaces \
+          --query "Namespaces[?Name=='${{ env.ECR_REPOSITORY }}.local' && Type=='DNS_PRIVATE'].Id" \
+          --output text 2>/dev/null || echo "")
         
         if [ ! -z "$NAMESPACE_ID" ] && [ "$NAMESPACE_ID" != "None" ]; then
-          echo "Importing Service Discovery Namespace"
-          terraform import aws_service_discovery_private_dns_namespace.private $NAMESPACE_ID
+          # Take only the first match if multiple are returned
+          NAMESPACE_ID=$(echo "$NAMESPACE_ID" | head -n1 | tr -d '[:space:]')
+          echo "Importing Service Discovery Namespace: $NAMESPACE_ID"
+          
+          # Get the VPC ID for the namespace association
+          VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+          
+          if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+            echo "Importing with VPC association: $VPC_ID"
+            terraform import "aws_service_discovery_private_dns_namespace.private" "$NAMESPACE_ID" || \
+              echo "Failed to import Service Discovery Namespace, but continuing..."
+          else
+            terraform import "aws_service_discovery_private_dns_namespace.private" "$NAMESPACE_ID" || \
+              echo "Failed to import Service Discovery Namespace (no VPC), but continuing..."
+          fi
+        else
+          echo "No matching Service Discovery Namespace found to import"
         fi
         
     - name: Show Import Status
@@ -671,28 +690,40 @@ jobs:
           terraform import aws_s3_bucket.analytics_data "$BUCKET_NAME" || echo "S3 Bucket import failed or already exists"
         fi
         
-        # Import Service Discovery Namespace if it exists
-        NAMESPACE_ID=$(aws servicediscovery list-namespaces --query "Namespaces[?Name=='${{ env.ECR_REPOSITORY }}.local'].Id" --output text 2>/dev/null || echo "")
-        if [ ! -z "$NAMESPACE_ID" ] && [ "$NAMESPACE_ID" != "None" ]; then
-          echo "Importing Service Discovery Namespace..."
-          terraform import aws_service_discovery_private_dns_namespace.private "$NAMESPACE_ID" || echo "Service Discovery Namespace import failed or already exists"
+        # Import Service Discovery Namespace if it exists - handle multiple namespaces
+        NAMESPACE_IDS=$(aws servicediscovery list-namespaces \
+          --query "Namespaces[?Name=='${{ env.ECR_REPOSITORY }}.local' && Type=='DNS_PRIVATE'].Id" \
+          --output text 2>/dev/null || echo "")
+          
+        if [ ! -z "$NAMESPACE_IDS" ] && [ "$NAMESPACE_IDS" != "None" ]; then
+          # Take only the first matching namespace
+          NAMESPACE_ID=$(echo "$NAMESPACE_IDS" | head -n1 | tr -d '[:space:]')
+          echo "Importing Service Discovery Namespace: $NAMESPACE_ID"
+          
+          # Get the VPC ID for the namespace association
+          VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+          
+          if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+            echo "Importing with VPC association: $VPC_ID"
+            terraform import "aws_service_discovery_private_dns_namespace.private" "$NAMESPACE_ID" || \
+              echo "Failed to import Service Discovery Namespace, but continuing..."
+          else
+            terraform import "aws_service_discovery_private_dns_namespace.private" "$NAMESPACE_ID" || \
+              echo "Failed to import Service Discovery Namespace (no VPC), but continuing..."
+          fi
         fi
         
-        echo "Running terraform apply..."
-        # Use the plan file if it exists, otherwise use direct apply
-        if [ -f "plan.tfplan" ]; then
-          terraform apply -auto-approve plan.tfplan
-        else
-          terraform apply -auto-approve \
-            -var="region=${{ env.AWS_REGION }}" \
-            -var="environment=production" \
-            -var="app_name=${{ env.ECR_REPOSITORY }}" \
-            -var="app_port=5000" \
-            -var="app_count=2" \
-            -var="minio_access_key=minioadmin" \
-            -var="minio_secret_key=minioadmin" \
-            -var="image_tag=latest"
-        fi
+        echo "Running terraform apply with direct variables..."
+        # Always use direct apply to avoid stale plan issues
+        terraform apply -auto-approve \
+          -var="region=${{ env.AWS_REGION }}" \
+          -var="environment=production" \
+          -var="app_name=${{ env.ECR_REPOSITORY }}" \
+          -var="app_port=5000" \
+          -var="app_count=2" \
+          -var="minio_access_key=minioadmin" \
+          -var="minio_secret_key=minioadmin" \
+          -var="image_tag=latest"
 
   test-deployment:
     name: Test Deployment
