@@ -118,15 +118,19 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       resources_imported: ${{ steps.import-status.outputs.resources_imported }}
-    
+      vpc_id: ${{ steps.vpc-import.outputs.vpc_id }}
+      
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
+      with:
+        fetch-depth: 0  # Ensure full history for versioning
       
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: ${{ env.TERRAFORM_VERSION }}
+        terraform_wrapper: false
         
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v2
@@ -134,69 +138,241 @@ jobs:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        role-duration-seconds: 3600
         
     - name: Initialize Terraform
+      id: init
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        terraform init -upgrade
+        terraform init -upgrade -input=false
         
-    - name: Import ECR Repository if it exists
+    - name: Check and Import VPC
+      id: vpc-import
       continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        # Check if ECR repository exists
-        if aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} > /dev/null 2>&1; then
-          echo "Importing existing ECR repository"
-          terraform import aws_ecr_repository.app ${{ env.ECR_REPOSITORY }}
+        
+        # Check if VPC is already in state
+        if terraform state show 'aws_vpc.main[0]' >/dev/null 2>&1; then
+          echo "VPC already exists in state"
+          echo "vpc_id=$(terraform state show 'aws_vpc.main[0]' | grep '^id ' | awk '{print $3}' | tr -d '\"\n')" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        
+        # Find VPC by tags
+        VPC_ID=$(aws ec2 describe-vpcs \
+          --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" \
+          --query 'Vpcs[0].VpcId' \
+          --output text 2>/dev/null || echo "")
+        
+        if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+          echo "Importing VPC: $VPC_ID"
+          terraform import 'aws_vpc.main[0]' "$VPC_ID"
+          echo "vpc_id=$VPC_ID" >> $GITHUB_OUTPUT
         else
-          echo "ECR repository does not exist, it will be created"
-          terraform apply -target=aws_ecr_repository.app -auto-approve \
-            -var="region=${{ env.AWS_REGION }}" \
-            -var="environment=production" \
-            -var="app_name=${{ env.ECR_REPOSITORY }}" \
-            -var="app_port=5000" \
-            -var="app_count=2" \
-            -var="minio_access_key=minioadmin" \
-            -var="minio_secret_key=minioadmin" \
-            -var="image_tag=latest"
+          echo "No existing VPC found to import"
+          echo "vpc_id=" >> $GITHUB_OUTPUT
         fi
-        
-    - name: Import Target Group if it exists
+    
+    - name: Import Subnets
+      id: subnets-import
       continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        # Get the target group ARN if it exists
-        TG_ARN=$(aws elbv2 describe-target-groups --names "${{ env.ECR_REPOSITORY }}-tg" --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
-        if [ ! -z "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
-          echo "Importing existing Target Group"
-          terraform import aws_lb_target_group.app "$TG_ARN"
+        
+        # Get VPC ID from previous step or find it
+        VPC_ID="${{ steps.vpc-import.outputs.vpc_id }}"
+        if [ -z "$VPC_ID" ]; then
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" \
+            --query 'Vpcs[0].VpcId' \
+            --output text 2>/dev/null || echo "")
         fi
         
-    - name: Import Minio Service if it exists
-      continue-on-error: true
-      run: |
-        cd ${{ env.TERRAFORM_WORKING_DIR }}
-        # Get the MinIO service ARN if it exists
-        SERVICE_ARN=$(aws ecs describe-services --cluster "${{ env.ECR_REPOSITORY }}-cluster" --services "${{ env.ECR_REPOSITORY }}-minio-service" --query 'services[0].serviceArn' --output text 2>/dev/null || echo "")
-        if [ ! -z "$SERVICE_ARN" ] && [ "$SERVICE_ARN" != "None" ]; then
-          echo "Importing existing MinIO ECS Service"
-          terraform import "aws_ecs_service.minio" "${SERVICE_ARN#*/}"
+        if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
+          echo "No VPC found, skipping subnet imports"
+          exit 0
         fi
         
-    - name: Import EC2 Key Pair if it exists
-      continue-on-error: true
-      run: |
-        cd ${{ env.TERRAFORM_WORKING_DIR }}
-        if aws ec2 describe-key-pairs --key-names "${{ env.ECR_REPOSITORY }}-ec2-key" > /dev/null 2>&1; then
-          echo "Importing existing EC2 Key Pair"
-          # Check if already in state
-          if ! terraform state show aws_key_pair.ec2_key_pair > /dev/null 2>&1; then
-            terraform import aws_key_pair.ec2_key_pair "${{ env.ECR_REPOSITORY }}-ec2-key" || \
-            echo "Key pair already exists in state or import failed, continuing..."
-          else
-            echo "Key pair already exists in state"
+        # Import public subnets
+        for AZ in a b; do
+          SUBNET_ID=$(aws ec2 describe-subnets \
+            --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-public-$AZ" "Name=vpc-id,Values=$VPC_ID" \
+            --query 'Subnets[0].SubnetId' \
+            --output text 2>/dev/null || echo "")
+            
+          if [ -n "$SUBNET_ID" ] && [ "$SUBNET_ID" != "None" ]; then
+            INDEX=$([ "$AZ" = "a" ] && echo 0 || echo 1)
+            echo "Importing subnet $SUBNET_ID at index $INDEX"
+            terraform import "aws_subnet.public[$INDEX]" "$SUBNET_ID" || \
+              echo "Failed to import subnet $SUBNET_ID, continuing..."
           fi
+        done
+    
+    - name: Import Security Groups
+      id: security-groups-import
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        
+        # Get VPC ID
+        VPC_ID="${{ steps.vpc-import.outputs.vpc_id }}"
+        if [ -z "$VPC_ID" ]; then
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" \
+            --query 'Vpcs[0].VpcId' \
+            --output text 2>/dev/null || echo "")
         fi
+        
+        if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
+          echo "No VPC found, skipping security group imports"
+          exit 0
+        fi
+        
+        # Define security groups to import
+        declare -A SGS=(
+          ["alb"]="${{ env.ECR_REPOSITORY }}-alb-sg"
+          ["ecs_instances"]="${{ env.ECR_REPOSITORY }}-ecs-instances-sg"
+          ["ecs_tasks"]="${{ env.ECR_REPOSITORY }}-ecs-tasks-sg"
+        )
+        
+        for SG_VAR in "${!SGS[@]}"; do
+          SG_NAME="${SGS[$SG_VAR]}"
+          
+          # Check if already imported
+          if terraform state show "aws_security_group.$SG_VAR" >/dev/null 2>&1; then
+            echo "Security group $SG_VAR already imported, skipping"
+            continue
+          fi
+          
+          # Find and import security group
+          SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=$SG_NAME" "Name=vpc-id,Values=$VPC_ID" \
+            --query 'SecurityGroups[0].GroupId' \
+            --output text 2>/dev/null || echo "")
+            
+          if [ -n "$SG_ID" ] && [ "$SG_ID" != "None" ]; then
+            echo "Importing security group $SG_NAME ($SG_ID)"
+            terraform import "aws_security_group.$SG_VAR" "$SG_ID" || \
+              echo "Failed to import security group $SG_NAME, continuing..."
+          else
+            echo "Security group $SG_NAME not found, will be created"
+          fi
+        done
+    
+    - name: Import ECR Repository
+      id: ecr-import
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        
+        # Check if already imported
+        if terraform state show 'aws_ecr_repository.app' >/dev/null 2>&1; then
+          echo "ECR repository already imported"
+          exit 0
+        fi
+        
+        if aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} >/dev/null 2>&1; then
+          echo "Importing ECR repository: ${{ env.ECR_REPOSITORY }}"
+          terraform import aws_ecr_repository.app ${{ env.ECR_REPOSITORY }} || \
+            echo "Failed to import ECR repository, continuing..."
+        else
+          echo "ECR repository ${{ env.ECR_REPOSITORY }} not found, will be created"
+        fi
+    
+    - name: Import S3 Bucket
+      id: s3-import
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        
+        # Check if already imported
+        if terraform state show 'aws_s3_bucket.analytics_data' >/dev/null 2>&1; then
+          echo "S3 bucket already imported"
+          exit 0
+        fi
+        
+        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        BUCKET_NAME="${{ env.ECR_REPOSITORY }}-analytics-data-$ACCOUNT_ID"
+        
+        if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
+          echo "Importing S3 bucket: $BUCKET_NAME"
+          terraform import aws_s3_bucket.analytics_data "$BUCKET_NAME" || \
+            echo "Failed to import S3 bucket, continuing..."
+        else
+          echo "S3 bucket $BUCKET_NAME not found, will be created"
+        fi
+    
+    - name: Import Service Discovery Namespace
+      id: service-discovery-import
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        
+        # Check if already imported
+        if terraform state show 'aws_service_discovery_private_dns_namespace.private' >/dev/null 2>&1; then
+          echo "Service Discovery namespace already imported"
+          exit 0
+        fi
+        
+        # Get VPC ID if needed
+        VPC_ID="${{ steps.vpc-import.outputs.vpc_id }}"
+        if [ -z "$VPC_ID" ]; then
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" \
+            --query 'Vpcs[0].VpcId' \
+            --output text 2>/dev/null || echo "")
+        fi
+        
+        NAMESPACE_ID=$(aws servicediscovery list-namespaces \
+          --query "Namespaces[?Name=='${{ env.ECR_REPOSITORY }}.local' && Type=='DNS_PRIVATE'].Id" \
+          --output text 2>/dev/null | head -n1 || echo "")
+        
+        if [ -n "$NAMESPACE_ID" ] && [ "$NAMESPACE_ID" != "None" ]; then
+          echo "Importing Service Discovery Namespace: $NAMESPACE_ID"
+          terraform import aws_service_discovery_private_dns_namespace.private "$NAMESPACE_ID" || \
+            echo "Failed to import Service Discovery namespace, continuing..."
+        else
+          echo "Service Discovery namespace not found, will be created"
+        fi
+    
+    - name: Verify and Plan
+      id: verify
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        
+        # Show current state
+        echo "=== Current Terraform State ==="
+        terraform state list
+        
+        # Run plan to verify configuration
+        echo -e "\n=== Running Terraform Plan ==="
+        terraform plan -input=false -no-color \
+          -var="region=${{ env.AWS_REGION }}" \
+          -var="environment=production" \
+          -var="app_name=${{ env.ECR_REPOSITORY }}" \
+          -var="app_port=5000" \
+          -var="app_count=2" \
+          -var="minio_access_key=minioadmin" \
+          -var="minio_secret_key=minioadmin" \
+          -var="image_tag=latest" \
+          -out=tfplan
+        
+        # Check if there are any changes needed
+        if terraform show -no-color tfplan | grep -q 'No changes.'; then
+          echo "No changes needed, infrastructure is up-to-date"
+          echo "changes_needed=false" >> $GITHUB_OUTPUT
+        else
+          echo "Changes detected, please apply the plan"
+          echo "changes_needed=true" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Set Import Status
+      id: import-status
+      run: |
+        # This step just sets the output for the job
+        echo "resources_imported=true" >> $GITHUB_OUTPUT
         
     - name: Import Load Balancer if it exists
       continue-on-error: true
