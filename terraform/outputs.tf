@@ -20,12 +20,12 @@ output "ecs_service_name" {
 
 output "vpc_id" {
   description = "The ID of the VPC"
-  value       = aws_vpc.main.id
+  value       = local.vpc_id
 }
 
 output "public_subnets" {
   description = "List of public subnet IDs"
-  value       = aws_subnet.public[*].id
+  value       = local.public_subnet_ids
 }
 
 output "security_group_id" {

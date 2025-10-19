@@ -83,7 +83,7 @@ resource "aws_autoscaling_group" "ecs_asg" {
 resource "aws_security_group" "ecs_instances" {
   name        = "${var.app_name}-ecs-instances-sg"
   description = "Security group for ECS instances"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   # Allow all outbound traffic
   egress {
@@ -241,17 +241,17 @@ resource "aws_ecs_service" "minio" {
 }
 
 resource "aws_lb_target_group" "minio" {
-  name        = "${var.app_name}-minio-tg-new-${substr(md5(timestamp()), 0, 5)}" # Added 'new' to the name to avoid conflicts
-  port        = 9001
+  name        = "${var.app_name}-minio-tg-new-${substr(md5(timestamp()), 0, 5)}"
+  port        = 9000
   protocol    = "HTTP"
-  target_type = "instance"
-  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
+  vpc_id      = local.vpc_id
 
   health_check {
     enabled             = true
     path                = "/minio/health/live"
     port                = "traffic-port"
-    protocol            = "HTTP"
+{{ ... }}
     healthy_threshold   = 2
     unhealthy_threshold = 2
     timeout             = 5

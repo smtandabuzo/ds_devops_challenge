@@ -1,7 +1,7 @@
 resource "aws_service_discovery_private_dns_namespace" "private" {
   name        = "${var.app_name}.local"
   description = "Service discovery namespace for ${var.app_name}"
-  vpc         = aws_vpc.main.id
+  vpc         = local.vpc_id
 }
 
 resource "aws_service_discovery_service" "app" {
