@@ -237,8 +237,8 @@ jobs:
         curl -s http://${{ steps.alb.outputs.ALB_DNS }}:9000
 
   cleanup-resources:
-    name: ${{ github.event_name == 'workflow_dispatch' && 'Manual Cleanup' || 'Cleanup on Failure' }}
-    needs: ${{ github.event_name == 'workflow_dispatch' && '[]' || 'deploy-terraform, test-deployment' }}
+    name: Cleanup Resources
+    needs: [deploy-terraform, test-deployment]
     if: ${{ github.event_name == 'workflow_dispatch' || failure() }}
     runs-on: ubuntu-latest
     
