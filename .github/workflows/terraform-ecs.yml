@@ -116,6 +116,8 @@ jobs:
     name: Import Existing Resources
     needs: validate-terraform
     runs-on: ubuntu-latest
+    outputs:
+      resources_imported: ${{ steps.import-status.outputs.resources_imported }}
     
     steps:
     - name: Checkout code
@@ -411,14 +413,29 @@ jobs:
         fi
         
     - name: Show Import Status
+      id: import-status
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         echo "Current Terraform state:"
         terraform state list
+        
+        # Check if any resources are in the state
+        if terraform state list | grep -q .; then
+          echo "resources_imported=true" >> $GITHUB_OUTPUT
+        else
+          echo "resources_imported=false" >> $GITHUB_OUTPUT
+        fi
+        
+    - name: Verify Resources
+      if: steps.import-status.outputs.resources_imported != 'true'
+      run: |
+        echo "##[error]Failed to import all required resources. Please check the logs above for errors."
+        exit 1
 
   build-and-push-ecr:
     name: Build and Push to ECR
     needs: [validate-terraform, import-resources]  # Depend on both validation and resource import
+    if: needs.import-resources.outputs.resources_imported == 'true' || needs.import-resources.result == 'skipped'
     runs-on: ubuntu-latest
     
     steps:
@@ -456,7 +473,9 @@ jobs:
 
   deploy-terraform:
     name: Deploy Terraform (Creates ECR Repo & Infrastructure)
-    needs: [test-terraform-plan, build-and-push-ecr, import-resources]
+    needs: [test-terraform-plan, build-and-push-ecr]
+    # Only run if import-resources was successful or skipped
+    if: needs.import-resources.result == 'success' || needs.import-resources.result == 'skipped'
     runs-on: ubuntu-latest
     
     steps:
@@ -592,11 +611,63 @@ jobs:
     - name: Terraform Apply
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        # First, apply the plan file that was generated earlier
+        
+        # First, import any remaining resources that might have been missed
+        echo "Importing any remaining resources..."
+        
+        # Import ECR Repository if it exists
+        if aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} > /dev/null 2>&1; then
+          echo "Importing ECR repository..."
+          terraform import aws_ecr_repository.app ${{ env.ECR_REPOSITORY }} || echo "ECR repository import failed or already exists"
+        fi
+        
+        # Import EC2 Key Pair if it exists
+        if aws ec2 describe-key-pairs --key-names "${{ env.ECR_REPOSITORY }}-ec2-key" > /dev/null 2>&1; then
+          echo "Importing EC2 Key Pair..."
+          terraform import aws_key_pair.ec2_key_pair "${{ env.ECR_REPOSITORY }}-ec2-key" || echo "EC2 Key Pair import failed or already exists"
+        fi
+        
+        # Import Security Groups
+        VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+        if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+          # Import ALB Security Group
+          ALB_SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${{ env.ECR_REPOSITORY }}-alb-sg" "Name=vpc-id,Values=$VPC_ID" \
+            --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
+          if [ ! -z "$ALB_SG_ID" ] && [ "$ALB_SG_ID" != "None" ]; then
+            echo "Importing ALB Security Group..."
+            terraform import aws_security_group.alb $ALB_SG_ID || echo "ALB Security Group import failed or already exists"
+          fi
+          
+          # Import ECS Instances Security Group
+          ECS_SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${{ env.ECR_REPOSITORY }}-ecs-instances-sg" "Name=vpc-id,Values=$VPC_ID" \
+            --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
+          if [ ! -z "$ECS_SG_ID" ] && [ "$ECS_SG_ID" != "None" ]; then
+            echo "Importing ECS Instances Security Group..."
+            terraform import aws_security_group.ecs_instances $ECS_SG_ID || echo "ECS Instances Security Group import failed or already exists"
+          fi
+        fi
+        
+        # Import S3 Bucket if it exists
+        BUCKET_NAME="${{ env.ECR_REPOSITORY }}-analytics-data-$(aws sts get-caller-identity --query Account --output text)"
+        if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
+          echo "Importing S3 Bucket..."
+          terraform import aws_s3_bucket.analytics_data "$BUCKET_NAME" || echo "S3 Bucket import failed or already exists"
+        fi
+        
+        # Import Service Discovery Namespace if it exists
+        NAMESPACE_ID=$(aws servicediscovery list-namespaces --query "Namespaces[?Name=='${{ env.ECR_REPOSITORY }}.local'].Id" --output text 2>/dev/null || echo "")
+        if [ ! -z "$NAMESPACE_ID" ] && [ "$NAMESPACE_ID" != "None" ]; then
+          echo "Importing Service Discovery Namespace..."
+          terraform import aws_service_discovery_private_dns_namespace.private "$NAMESPACE_ID" || echo "Service Discovery Namespace import failed or already exists"
+        fi
+        
+        echo "Running terraform apply..."
+        # Use the plan file if it exists, otherwise use direct apply
         if [ -f "plan.tfplan" ]; then
           terraform apply -auto-approve plan.tfplan
         else
-          # Fallback to direct apply if plan file is not found
           terraform apply -auto-approve \
             -var="region=${{ env.AWS_REGION }}" \
             -var="environment=production" \
