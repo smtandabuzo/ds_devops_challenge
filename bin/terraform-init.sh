@@ -13,8 +13,10 @@ terraform init
 echo "=== Checking for existing state ==="
 if terraform state list >/dev/null 2>&1; then
     STATE_EXISTS=true
+    echo "Existing state found"
 else
     STATE_EXISTS=false
+    echo "No existing state found, will create new state"
 fi
 
 # Create workspace if it doesn't exist
@@ -30,10 +32,22 @@ echo -e "\n=== Setting up Terraform workspace ==="
 
 # If state doesn't exist, create an empty one
 if [ "$STATE_EXISTS" = "false" ]; then
-    echo -e "\n=== Initializing empty Terraform state ==="
+    echo -e "\n=== Creating initial Terraform state ==="
     {
+        # Create a minimal configuration if it doesn't exist
+        if [ ! -f "main.tf" ]; then
+            cat > main.tf << 'EOL'
+resource "null_resource" "initial_state" {
+  triggers = {
+    timestamp = timestamp()
+  }
+}
+EOL
+            echo "Created minimal Terraform configuration"
+        fi
+
         terraform apply -auto-approve -target=null_resource.initial_state || \
-        echo "No resources to create for initial state. This is normal for a new environment."
+        echo "Initial state creation completed"
     } 2>/dev/null
     echo "Initial empty state created."
 fi
