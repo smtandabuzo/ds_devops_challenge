@@ -112,9 +112,44 @@ jobs:
         path: ${{ env.TERRAFORM_WORKING_DIR }}/plan.tfplan
         if-no-files-found: error
 
+  create-ecr-repo:
+    name: Create ECR Repository
+    needs: validate-terraform
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TERRAFORM_VERSION }}
+        
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Create ECR Repository
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        terraform init
+        terraform apply -target=aws_ecr_repository.app -auto-approve \
+          -var="region=${{ env.AWS_REGION }}" \
+          -var="environment=production" \
+          -var="app_name=${{ env.ECR_REPOSITORY }}" \
+          -var="app_port=5000" \
+          -var="app_count=2" \
+          -var="minio_access_key=minioadmin" \
+          -var="minio_secret_key=minioadmin" \
+          -var="image_tag=latest"
+
   build-and-push-ecr:
     name: Build and Push to ECR
-    needs: validate-terraform  # Only depend on validation
+    needs: [validate-terraform, create-ecr-repo]  # Depend on both validation and ECR repo creation
     runs-on: ubuntu-latest
     
     steps:
