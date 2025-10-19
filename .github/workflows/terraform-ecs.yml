@@ -480,9 +480,10 @@ jobs:
           --query 'Namespaces[0].Id' \
           --output text 2>/dev/null || echo "")
         
-        if [ -n "$NAMESPACE_ID" ] && [ "$NAMESPACE_ID" != "None" ]; then
-          echo "Importing Service Discovery Namespace: $NAMESPACE_ID"
-          terraform import aws_service_discovery_private_dns_namespace.private "$NAMESPACE_ID" || \
+        if [ -n "$NAMESPACE_ID" ] && [ "$NAMESPACE_ID" != "None" ] && [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+          echo "Importing Service Discovery Namespace: $NAMESPACE_ID with VPC: $VPC_ID"
+          # Format: NAMESPACE_ID:VPC_ID
+          terraform import aws_service_discovery_private_dns_namespace.private "${NAMESPACE_ID}:${VPC_ID}" || \
             echo "Failed to import Service Discovery namespace, continuing..."
           
           # Import Service Discovery Services
@@ -1035,7 +1036,11 @@ jobs:
         if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
           # Import Route53 Private Hosted Zone
           ZONE_NAME="${{ env.ECR_REPOSITORY }}.local"
-          ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name $ZONE_NAME --query 'HostedZones[?Config.PrivateZone==`true`].Id' --output text 2>/dev/null || echo "")
+          # Get only the first matching private hosted zone
+          ZONE_ID=$(aws route53 list-hosted-zones-by-name \
+            --dns-name $ZONE_NAME \
+            --query 'HostedZones[?Config.PrivateZone==`true`].Id | [0]' \
+            --output text 2>/dev/null | cut -d'/' -f3 || echo "")
           
           if [ ! -z "$ZONE_ID" ] && [ "$ZONE_ID" != "None" ]; then
             # Check if the Route53 zone resource exists in the configuration
