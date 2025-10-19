@@ -267,22 +267,59 @@ jobs:
         echo "\nListing existing ALBs:"
         aws elbv2 describe-load-balancers || echo "No ALBs found or error listing ALBs"
     
-    - name: Terraform Destroy
+    - name: Force Cleanup Resources
       run: |
+        # Set AWS region
+        export AWS_PAGER=""
+        export AWS_REGION=${{ env.AWS_REGION }}
+        
+        # Delete ECS Service if it exists
+        echo "Deleting ECS Service if it exists..."
+        aws ecs update-service \
+          --cluster ${{ env.ECR_REPOSITORY }} \
+          --service ${{ env.ECR_REPOSITORY }} \
+          --desired-count 0 \
+          --region ${{ env.AWS_REGION }} || true
+          
+        aws ecs delete-service \
+          --cluster ${{ env.ECR_REPOSITORY }} \
+          --service ${{ env.ECR_REPOSITORY }} \
+          --region ${{ env.AWS_REGION }} || true
+        
+        # Delete ECR Repository
+        echo "Deleting ECR Repository..."
+        aws ecr delete-repository \
+          --repository-name ${{ env.ECR_REPOSITORY }} \
+          --force \
+          --region ${{ env.AWS_REGION }} || true
+        
+        # Delete CloudWatch Log Group
+        echo "Deleting CloudWatch Log Group..."
+        aws logs delete-log-group \
+          --log-group-name "/ecs/${{ env.ECR_REPOSITORY }}" \
+          --region ${{ env.AWS_REGION }} || true
+        
+        # Delete IAM Roles and Policies
+        for role in "ds-devops-app-ecs-task-execution-role" "ds-devops-app-ecs-task-role" "ds-devops-app-ecs-instance-role"; do
+          echo "Detaching policies from IAM Role: $role"
+          for policy_arn in $(aws iam list-attached-role-policies --role-name $role --query "AttachedPolicies[].PolicyArn" --output text --region ${{ env.AWS_REGION }} 2>/dev/null || true); do
+            aws iam detach-role-policy --role-name $role --policy-arn $policy_arn --region ${{ env.AWS_REGION }} || true
+          done
+          
+          echo "Deleting IAM Role: $role"
+          aws iam delete-role --role-name $role --region ${{ env.AWS_REGION }} || true
+        done
+        
+        # Delete IAM Policy
+        echo "Deleting IAM Policy..."
+        aws iam delete-policy \
+          --policy-arn "arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/ds-devops-app-s3-access" \
+          --region ${{ env.AWS_REGION }} || true
+        
+        # Run Terraform destroy as a final cleanup
+        echo "Running Terraform destroy..."
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        terraform init
-        
-        # First, try to import any existing state to avoid errors
-        terraform import -var="region=${{ env.AWS_REGION }}" \
-          -var="environment=production" \
-          -var="app_name=${{ env.ECR_REPOSITORY }}" \
-          -var="app_port=5000" \
-          -var="minio_access_key=minioadmin" \
-          -var="minio_secret_key=minioadmin" \
-          -var="image_tag=latest" \
-          -auto-approve || echo "Import failed, continuing with destroy..."
-        
-        # Then destroy
+        terraform init -input=false
         terraform destroy -auto-approve \
           -var="region=${{ env.AWS_REGION }}" \
           -var="environment=production" \
