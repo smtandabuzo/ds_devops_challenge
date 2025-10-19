@@ -562,7 +562,7 @@ jobs:
         fi
     
     - name: Set Import Status
-      id: import-status
+      id: set-import-status
       run: |
         # This step just sets the output for the job
         echo "resources_imported=true" >> $GITHUB_OUTPUT
