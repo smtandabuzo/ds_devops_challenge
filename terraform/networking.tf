@@ -1,40 +1,21 @@
-# Try to find the most recently created VPC with the app name
-# This helps when multiple VPCs with similar names exist
-data "aws_vpcs" "matching" {
-  count = var.use_existing_vpc ? 1 : 0
-
-  tags = {
-    Name = "${var.app_name}-vpc"
-  }
-}
-
+# Try to find an existing VPC with the app name
 data "aws_vpc" "existing" {
-  count = var.use_existing_vpc && length(data.aws_vpcs.matching[0].ids) > 0 ? 1 : 0
-  id    = var.use_existing_vpc ? data.aws_vpcs.matching[0].ids[0] : null
-
-  # Add additional safety filters
+  count = var.use_existing_vpc ? 1 : 0
+  
   filter {
     name   = "tag:Name"
     values = ["${var.app_name}-vpc"]
   }
-
+  
   filter {
     name   = "isDefault"
     values = ["false"]
   }
-
-  # Ensure we're getting the most recent VPC if multiple exist
-  lifecycle {
-    postcondition {
-      condition     = self.id != ""
-      error_message = "No VPC found with name ${var.app_name}-vpc. Please create one or set use_existing_vpc = false"
-    }
-  }
 }
 
-# Create a new VPC only if not using an existing one
+# Create a new VPC if not using an existing one or if the existing one is not found
 resource "aws_vpc" "main" {
-  count                = var.use_existing_vpc ? 0 : 1
+  count                = var.use_existing_vpc && length(data.aws_vpc.existing) > 0 ? 0 : 1
   cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
   enable_dns_support   = true
@@ -44,9 +25,16 @@ resource "aws_vpc" "main" {
   }
 }
 
-# Use either the existing VPC or the newly created one
+# Determine the VPC ID based on what's available
 locals {
-  vpc_id = var.use_existing_vpc && length(data.aws_vpc.existing) > 0 ? data.aws_vpc.existing[0].id : aws_vpc.main[0].id
+  # Use existing VPC if found, otherwise use the newly created one
+  vpc_id = coalesce(
+    var.use_existing_vpc && length(data.aws_vpc.existing) > 0 ? data.aws_vpc.existing[0].id : null,
+    length(aws_vpc.main) > 0 ? aws_vpc.main[0].id : null
+  )
+  
+  # This will cause a clear error if no VPC is available
+  vpc_id_validation = local.vpc_id != null ? true : tobool("Failed to find or create a VPC. Please check your configuration.")
 }
 
 # Find existing subnets if using existing VPC
