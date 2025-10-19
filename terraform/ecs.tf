@@ -74,21 +74,19 @@ resource "aws_ecs_service" "app" {
   cluster                 = aws_ecs_cluster.main.id
   task_definition         = aws_ecs_task_definition.app.arn
   desired_count           = var.app_count
+  launch_type             = "EC2"
   enable_ecs_managed_tags = true
   propagate_tags          = "SERVICE"
   enable_execute_command  = true
 
-  launch_type = "EC2"
-  
-  # For EC2 launch type, we don't need to specify network configuration
-  # as it will use the EC2 instance's network settings
+  # For EC2 launch type, tasks will use the EC2 instance's network settings
 
   load_balancer {
     target_group_arn = aws_lb_target_group.app.arn
     container_name   = "${var.app_name}-app" # Updated to match container name
     container_port   = var.app_port
   }
-
+  
   service_registries {
     registry_arn = aws_service_discovery_service.app.arn
   }
