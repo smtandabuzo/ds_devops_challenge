@@ -94,8 +94,18 @@ jobs:
       id: plan
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
+        
+        # Initialize Terraform first
+        echo "=== Initializing Terraform ==="
         terraform init
-        terraform plan -input=false \
+        
+        # Show current state (non-blocking)
+        echo -e "\n=== Current Terraform State ==="
+        terraform state list || echo "No state yet, this is expected for a new environment"
+        
+        # Run plan
+        echo -e "\n=== Running Terraform Plan ==="
+        terraform plan -input=false -no-color \
           -var="region=${{ env.AWS_REGION }}" \
           -var="environment=production" \
           -var="app_name=${{ env.ECR_REPOSITORY }}" \
