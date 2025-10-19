@@ -94,16 +94,28 @@ jobs:
       id: plan
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
+
         # Initialize Terraform first
         echo "=== Initializing Terraform ==="
         terraform init
-        
-        # Show current state (non-blocking)
+
+        # Check if state exists, if not create an empty state
+        echo -e "\n=== Initializing Terraform State ==="
+        if [ ! -f "terraform.tfstate" ] && [ ! -f "terraform.tfstate.backup" ]; then
+          echo "No Terraform state file found. Creating initial state..."
+          terraform workspace new default || true
+          terraform workspace select default
+          terraform state pull > terraform.tfstate
+          echo "Initial empty state file created."
+        else
+          echo "Existing state file found."
+        fi
+
+        # List current state (will show empty for new state)
         echo -e "\n=== Current Terraform State ==="
-        terraform state list || echo "No state yet, this is expected for a new environment"
-        
-        # Run plan
+        terraform state list || echo "State is empty, which is expected for a new environment"
+
+        # Run plan with all required variables
         echo -e "\n=== Running Terraform Plan ==="
         terraform plan -input=false -no-color \
           -var="region=${{ env.AWS_REGION }}" \
@@ -114,7 +126,8 @@ jobs:
           -var="minio_access_key=minioadmin" \
           -var="minio_secret_key=minioadmin" \
           -var="image_tag=latest" \
-          -out=plan.tfplan
+          -out=plan.tfplan || \
+          { echo "Terraform plan failed"; exit 1; }
     - name: Upload Terraform Plan
       uses: actions/upload-artifact@v4
       with:
