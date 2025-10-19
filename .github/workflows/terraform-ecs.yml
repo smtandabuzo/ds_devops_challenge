@@ -865,16 +865,39 @@ jobs:
             if [ ! -z "$NAMESPACE_ID" ]; then
               echo "Importing Service Discovery Namespace: $NAMESPACE_ID"
               
-              # Try importing with just the namespace ID (without VPC ID)
-              if ! terraform import "aws_service_discovery_private_dns_namespace.private" "$NAMESPACE_ID" 2>/tmp/ns_import_error; then
+              # Get the VPC ID for the namespace import
+              VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${var.app_name}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+              
+              if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
+                echo "⚠️  Could not determine VPC ID for namespace import"
+                VPC_ID=$(aws ec2 describe-vpcs --query 'Vpcs[?IsDefault==`true`].VpcId' --output text 2>/dev/null || echo "")
+                if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
+                  echo "❌ Could not find any VPC to use for namespace import"
+                  exit 1
+                fi
+                echo "ℹ️  Using default VPC: $VPC_ID"
+              fi
+              
+              # Import with both namespace ID and VPC ID
+              IMPORT_ID="$NAMESPACE_ID:$VPC_ID"
+              echo "Importing Service Discovery Namespace with ID: $IMPORT_ID"
+              
+              if ! terraform import "aws_service_discovery_private_dns_namespace.private" "$IMPORT_ID" 2>/tmp/ns_import_error; then
                 if grep -q "already managed by Terraform" /tmp/ns_import_error; then
                   echo "⚠️  Service Discovery Namespace is already managed by Terraform"
                   echo "   Run 'terraform state list | grep aws_service_discovery_private_dns_namespace' to find the existing resource"
-                  # Get the existing namespace ID from the error message or state
+                  # Get the existing namespace ID from the state
                   NAMESPACE_ID=$(terraform state list | grep 'aws_service_discovery_private_dns_namespace' | head -1 | cut -d'.' -f2)
                 else
                   cat /tmp/ns_import_error
                   echo "❌ Failed to import Service Discovery Namespace"
+                  echo "   Trying alternative import method..."
+                  # Try importing with just the namespace ID
+                  if ! terraform import "aws_service_discovery_private_dns_namespace.private" "$NAMESPACE_ID"; then
+                    echo "❌ Failed to import Service Discovery Namespace with just the ID"
+                  else
+                    echo "✅ Successfully imported Service Discovery Namespace with just the ID"
+                  fi
                 fi
                 rm -f /tmp/ns_import_error
               else
