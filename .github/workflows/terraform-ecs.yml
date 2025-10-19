@@ -456,7 +456,7 @@ jobs:
 
   deploy-terraform:
     name: Deploy Terraform (Creates ECR Repo & Infrastructure)
-    needs: [test-terraform-plan, build-and-push-ecr]
+    needs: [test-terraform-plan, build-and-push-ecr, import-resources]
     runs-on: ubuntu-latest
     
     steps:
@@ -573,19 +573,39 @@ jobs:
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         terraform init -upgrade
+        
+    - name: Import Service Discovery Namespace if it exists
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        # Get VPC ID
+        VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+        if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+          # Check if service discovery namespace exists
+          NAMESPACE_ID=$(aws servicediscovery list-namespaces --filters "Name=NAME,Values=${{ env.ECR_REPOSITORY }}.local" --query 'Namespaces[?Type=="DNS_PRIVATE"].Id' --output text 2>/dev/null || echo "")
+          if [ ! -z "$NAMESPACE_ID" ] && [ "$NAMESPACE_ID" != "None" ]; then
+            echo "Importing existing Service Discovery Namespace"
+            terraform import aws_service_discovery_private_dns_namespace.private "${NAMESPACE_ID}"
+          fi
+        fi
     
     - name: Terraform Apply
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        terraform apply -auto-approve \
-          -var="region=${{ env.AWS_REGION }}" \
-          -var="environment=production" \
-          -var="app_name=${{ env.ECR_REPOSITORY }}" \
-          -var="app_port=5000" \
-          -var="app_count=2" \
-          -var="minio_access_key=minioadmin" \
-          -var="minio_secret_key=minioadmin" \
-          -var="image_tag=latest"
+        # First, apply the plan file that was generated earlier
+        if [ -f "plan.tfplan" ]; then
+          terraform apply -auto-approve plan.tfplan
+        else
+          # Fallback to direct apply if plan file is not found
+          terraform apply -auto-approve \
+            -var="region=${{ env.AWS_REGION }}" \
+            -var="environment=production" \
+            -var="app_name=${{ env.ECR_REPOSITORY }}" \
+            -var="app_port=5000" \
+            -var="app_count=2" \
+            -var="minio_access_key=minioadmin" \
+            -var="minio_secret_key=minioadmin" \
+            -var="image_tag=latest"
 
   test-deployment:
     name: Test Deployment
