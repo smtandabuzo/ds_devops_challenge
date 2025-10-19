@@ -1,3 +1,8 @@
+# Get available availability zones
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
 # Try to find an existing VPC first
 data "aws_vpc" "existing" {
   count = var.use_existing_vpc ? 1 : 0
@@ -144,6 +149,9 @@ resource "aws_security_group" "alb" {
   }
 
   tags = {
+    Name        = "${var.app_name}-alb-sg"
+    Environment = var.environment
+    ManagedBy   = "Terraform"
   }
 }
 
@@ -167,6 +175,8 @@ resource "aws_security_group" "ecs_tasks" {
   }
 
   tags = {
-    Name = "${var.app_name}-ecs-tasks-sg"
+    Name        = "${var.app_name}-ecs-tasks-sg"
+    Environment = var.environment
+    ManagedBy   = "Terraform"
   }
 }
