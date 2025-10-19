@@ -218,7 +218,203 @@ jobs:
         if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
           echo "Importing existing S3 Bucket"
           terraform import aws_s3_bucket.analytics_data "$BUCKET_NAME"
+          
+          # Import S3 bucket policy if it exists
+          if aws s3api get-bucket-policy --bucket "$BUCKET_NAME" > /dev/null 2>&1; then
+            echo "Importing S3 Bucket Policy"
+            terraform import aws_s3_bucket_policy.analytics_data "$BUCKET_NAME"
+          fi
         fi
+        
+    - name: Import Security Groups if they exist
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        
+        # Get VPC ID if not already set
+        if [ -z "$VPC_ID" ]; then
+          VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+        fi
+        
+        if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+          # Import ALB Security Group
+          ALB_SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${{ env.ECR_REPOSITORY }}-alb-sg" "Name=vpc-id,Values=$VPC_ID" \
+            --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
+            
+          if [ ! -z "$ALB_SG_ID" ] && [ "$ALB_SG_ID" != "None" ]; then
+            echo "Importing ALB Security Group"
+            terraform import aws_security_group.alb $ALB_SG_ID
+          fi
+          
+          # Import ECS Instances Security Group
+          ECS_SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${{ env.ECR_REPOSITORY }}-ecs-instances-sg" "Name=vpc-id,Values=$VPC_ID" \
+            --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
+            
+          if [ ! -z "$ECS_SG_ID" ] && [ "$ECS_SG_ID" != "None" ]; then
+            echo "Importing ECS Instances Security Group"
+            terraform import aws_security_group.ecs_instances $ECS_SG_ID
+          fi
+          
+          # Import ECS Service Security Group if it exists
+          ECS_SERVICE_SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${{ env.ECR_REPOSITORY }}-ecs-service-sg" "Name=vpc-id,Values=$VPC_ID" \
+            --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
+            
+          if [ ! -z "$ECS_SERVICE_SG_ID" ] && [ "$ECS_SERVICE_SG_ID" != "None" ]; then
+            echo "Importing ECS Service Security Group"
+            terraform import aws_security_group.ecs_service $ECS_SERVICE_SG_ID
+          fi
+        fi
+        
+    - name: Import IAM Roles and Policies if they exist
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        
+        # Import ECS Task Execution Role
+        TASK_EXEC_ROLE_NAME="${{ env.ECR_REPOSITORY }}-ecs-task-execution-role"
+        if aws iam get-role --role-name $TASK_EXEC_ROLE_NAME > /dev/null 2>&1; then
+          echo "Importing ECS Task Execution Role"
+          terraform import aws_iam_role.ecs_task_execution_role $TASK_EXEC_ROLE_NAME
+          terraform import "aws_iam_role_policy_attachment.ecs_task_execution_role_policy[0]" "$TASK_EXEC_ROLE_NAME/arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+        fi
+        
+        # Import ECS Task Role
+        TASK_ROLE_NAME="${{ env.ECR_REPOSITORY }}-ecs-task-role"
+        if aws iam get-role --role-name $TASK_ROLE_NAME > /dev/null 2>&1; then
+          echo "Importing ECS Task Role"
+          terraform import aws_iam_role.ecs_task_role $TASK_ROLE_NAME
+        fi
+        
+        # Import ECS Instance Role if it exists
+        INSTANCE_ROLE_NAME="${{ env.ECR_REPOSITORY }}-ecs-instance-role"
+        if aws iam get-role --role-name $INSTANCE_ROLE_NAME > /dev/null 2>&1; then
+          echo "Importing ECS Instance Role"
+          terraform import aws_iam_role.ecs_instance_role $INSTANCE_ROLE_NAME
+          terraform import "aws_iam_role_policy_attachment.ecs_instance_role[0]" "$INSTANCE_ROLE_NAME/arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+        fi
+        
+    - name: Import ECS Cluster and Services if they exist
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        
+        # Import ECS Cluster
+        CLUSTER_NAME="${{ env.ECR_REPOSITORY }}-cluster"
+        if aws ecs describe-clusters --clusters $CLUSTER_NAME --query 'clusters[0].clusterArn' --output text 2>/dev/null | grep -q 'arn:aws:ecs:'; then
+          echo "Importing ECS Cluster"
+          terraform import aws_ecs_cluster.main $CLUSTER_NAME
+          
+          # Import ECS Services
+          SERVICES=$(aws ecs list-services --cluster $CLUSTER_NAME --query 'serviceArns[*]' --output text 2>/dev/null || echo "")
+          for SERVICE_ARN in $SERVICES; do
+            SERVICE_NAME=$(echo $SERVICE_ARN | awk -F'/' '{print $NF}')
+            echo "Importing ECS Service: $SERVICE_NAME"
+            terraform import "aws_ecs_service.${SERVICE_NAME//-/_}" "$CLUSTER_NAME/$SERVICE_NAME"
+          done
+        fi
+        
+    - name: Import Route53 Private Hosted Zone if it exists
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        
+        # Check if VPC ID is available
+        if [ -z "$VPC_ID" ]; then
+          VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+        fi
+        
+        if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+          # Import Route53 Private Hosted Zone
+          ZONE_NAME="${{ env.ECR_REPOSITORY }}.local"
+          ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name $ZONE_NAME --query 'HostedZones[?Config.PrivateZone==`true`].Id' --output text 2>/dev/null || echo "")
+          
+          if [ ! -z "$ZONE_ID" ] && [ "$ZONE_ID" != "None" ]; then
+            echo "Importing Route53 Private Hosted Zone"
+            terraform import aws_route53_zone.private "${ZONE_ID#/hostedzone/}"
+            
+            # Import VPC association
+            ASSOC_ID=$(aws route53 get-hosted-zone --id ${ZONE_ID#/hostedzone/} --query 'VPCs[?VPCId==`'$VPC_ID'`].VPCId' --output text 2>/dev/null || echo "")
+            if [ ! -z "$ASSOC_ID" ] && [ "$ASSOC_ID" != "None" ]; then
+              echo "Importing VPC association for Route53 zone"
+              terraform import "aws_route53_zone_association.private_vpc_assoc[0]" "${ZONE_ID#/hostedzone/}_$VPC_ID"
+            fi
+          fi
+        fi
+        
+    - name: Import CloudWatch Log Groups if they exist
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        
+        # Import application log group
+        LOG_GROUP_NAME="/ecs/${{ env.ECR_REPOSITORY }}"
+        if aws logs describe-log-groups --log-group-name-prefix "$LOG_GROUP_NAME" --query 'logGroups[].logGroupName' --output text | grep -q "$LOG_GROUP_NAME"; then
+          echo "Importing CloudWatch Log Group: $LOG_GROUP_NAME"
+          terraform import "aws_cloudwatch_log_group.app[0]" "$LOG_GROUP_NAME"
+        fi
+        
+        # Import MinIO log group
+        MINIO_LOG_GROUP="/ecs/${{ env.ECR_REPOSITORY }}-minio"
+        if aws logs describe-log-groups --log-group-name-prefix "$MINIO_LOG_GROUP" --query 'logGroups[].logGroupName' --output text | grep -q "$MINIO_LOG_GROUP"; then
+          echo "Importing CloudWatch Log Group: $MINIO_LOG_GROUP"
+          terraform import aws_cloudwatch_log_group.minio "$MINIO_LOG_GROUP"
+        fi
+        
+    - name: Show Import Status
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        echo "### Imported Resources"
+        terraform state list
+        
+    - name: Import Security Groups if they exist
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        
+        # Get VPC ID
+        VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+        
+        if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+          # Import ALB Security Group
+          ALB_SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${{ env.ECR_REPOSITORY }}-alb-sg" "Name=vpc-id,Values=$VPC_ID" \
+            --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
+            
+          if [ ! -z "$ALB_SG_ID" ] && [ "$ALB_SG_ID" != "None" ]; then
+            echo "Importing ALB Security Group"
+            terraform import aws_security_group.alb $ALB_SG_ID
+          fi
+          
+          # Import ECS Instances Security Group
+          ECS_SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${{ env.ECR_REPOSITORY }}-ecs-instances-sg" "Name=vpc-id,Values=$VPC_ID" \
+            --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
+            
+          if [ ! -z "$ECS_SG_ID" ] && [ "$ECS_SG_ID" != "None" ]; then
+            echo "Importing ECS Instances Security Group"
+            terraform import aws_security_group.ecs_instances $ECS_SG_ID
+          fi
+        fi
+        
+    - name: Import Service Discovery Namespace if it exists
+      continue-on-error: true
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        NAMESPACE_ID=$(aws servicediscovery list-namespaces --query "Namespaces[?Name=='${{ env.ECR_REPOSITORY }}.local'].Id" --output text 2>/dev/null || echo "")
+        
+        if [ ! -z "$NAMESPACE_ID" ] && [ "$NAMESPACE_ID" != "None" ]; then
+          echo "Importing Service Discovery Namespace"
+          terraform import aws_service_discovery_private_dns_namespace.private $NAMESPACE_ID
+        fi
+        
+    - name: Show Import Status
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        echo "Current Terraform state:"
+        terraform state list
 
   build-and-push-ecr:
     name: Build and Push to ECR
