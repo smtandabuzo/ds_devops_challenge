@@ -17,37 +17,26 @@ resource "aws_cloudwatch_log_group" "app" {
   retention_in_days = 30
 
   tags = {
-    Environment = var.environment
     Application = var.app_name
   }
 }
 
 resource "aws_ecs_task_definition" "app" {
-  family                   = "${var.app_name}-task"
+  family                   = var.app_name
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = 1024
-  memory                   = 2048
+  cpu                      = var.fargate_cpu
+  memory                   = var.fargate_memory
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_role.arn
-
+  
+  # Add a unique suffix to the task definition name
   container_definitions = jsonencode([
     {
-      name      = "${var.app_name}-container"
-      image     = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com/ds-devops-app:${var.image_tag}"
-      essential = true
-      portMappings = [
-        {
-          containerPort = var.app_port
-          hostPort      = var.app_port
-          protocol      = "tcp"
-        }
-      ]
+      name        = var.app_name
+      image       = "${aws_ecr_repository.app.repository_url}:${var.image_tag}" # Use image_tag variable
+      essential   = true
       environment = [
-        {
-          name  = "MINIO_ENDPOINT"
-          value = "http://minio:9000"
-        },
         {
           name  = "MINIO_ACCESS_KEY"
           value = var.minio_access_key
@@ -55,10 +44,13 @@ resource "aws_ecs_task_definition" "app" {
         {
           name  = "MINIO_SECRET_KEY"
           value = var.minio_secret_key
-        },
+        }
+      ]
+      portMappings = [
         {
-          name  = "BUCKET_NAME"
-          value = "analytics-data"
+          containerPort = var.app_port
+          hostPort      = var.app_port
+          protocol      = "tcp"
         }
       ]
       logConfiguration = {

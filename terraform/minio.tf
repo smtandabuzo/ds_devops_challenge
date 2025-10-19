@@ -123,11 +123,28 @@ resource "aws_iam_instance_profile" "ecs_agent" {
 }
 # Auto Scaling Group for ECS Instances
 resource "aws_autoscaling_group" "ecs_asg" {
-  name                = "${var.app_name}-asg"
-  vpc_zone_identifier = aws_subnet.public[*].id
-  min_size            = 1
-  max_size            = 1 # Keep it to 1 for free tier
-  desired_capacity    = 1
+  # Add a name_prefix instead of name to allow for zero-downtime updates
+  name_prefix          = "${var.app_name}-asg-"
+  vpc_zone_identifier  = aws_subnet.public[*].id
+  min_size             = 1
+  max_size             = 1 # Keep it to 1 for free tier
+  desired_capacity     = 1
+  
+  # Add health check configuration
+  health_check_type         = "EC2"
+  health_check_grace_period = 300
+  
+  # Add termination policies
+  termination_policies = ["OldestLaunchConfiguration", "OldestInstance", "Default"]
+  
+  # Add instance refresh to handle rolling updates
+  instance_refresh {
+    strategy = "Rolling"
+    preferences {
+      min_healthy_percentage = 50
+    }
+    triggers = ["tag"]
+  }
 
   launch_template {
     id      = aws_launch_template.ecs_launch_template.id
@@ -145,6 +162,25 @@ resource "aws_autoscaling_group" "ecs_asg" {
     value               = ""
     propagate_at_launch = true
   }
+  
+  # Add lifecycle to handle updates and replacements
+  lifecycle {
+    create_before_destroy = true
+    ignore_changes = [
+      # Ignore changes to desired_capacity as they are managed by auto-scaling
+      desired_capacity,
+      # Ignore changes to target_group_arns as they are managed by ECS
+      target_group_arns,
+      # Ignore changes to load_balancers as they are managed by ECS
+      load_balancers,
+    ]
+  }
+  
+  # Add depends_on to ensure proper cleanup
+  depends_on = [
+    aws_launch_template.ecs_launch_template,
+    aws_iam_instance_profile.ecs_agent
+  ]
 }
 
 data "aws_ami" "ecs_optimized" {
