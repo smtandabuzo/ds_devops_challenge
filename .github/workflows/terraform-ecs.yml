@@ -2,7 +2,9 @@ name: Terraform ECS Deployment
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+      - submission/sazimtandabuzo
     paths:
       - 'terraform/**'
       - '.github/workflows/terraform-ecs.yml'
