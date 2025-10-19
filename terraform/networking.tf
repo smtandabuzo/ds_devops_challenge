@@ -11,6 +11,14 @@ data "aws_vpc" "existing" {
     name   = "isDefault"
     values = ["false"]
   }
+
+  # Don't fail if no VPC is found
+  lifecycle {
+    postcondition {
+      condition     = length(self.id) > 0 || !var.use_existing_vpc
+      error_message = "No VPC found with name ${var.app_name}-vpc. Set use_existing_vpc = false to create a new one."
+    }
+  }
 }
 
 # Create a new VPC if not using an existing one or if the existing one is not found
