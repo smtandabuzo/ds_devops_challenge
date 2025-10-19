@@ -321,7 +321,10 @@ jobs:
   rollback:
     name: Rollback
     needs: [deploy-terraform]
-    if: failure() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.rollback == 'true'))
+    # Only run on push failures or when manually triggered with rollback=true
+    if: >
+      (failure() && github.event_name == 'push') || 
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.rollback == 'true')
     runs-on: ubuntu-latest
     
     steps:
