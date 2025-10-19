@@ -248,7 +248,7 @@ jobs:
             continue
           fi
           
-          # Find and import security group
+          # Check if security group exists in AWS
           SG_INFO=$(aws ec2 describe-security-groups \
             --filters "Name=group-name,Values=$SG_NAME" "Name=vpc-id,Values=$VPC_ID" \
             --query 'SecurityGroups[0].[GroupId,GroupName]' \
@@ -256,11 +256,32 @@ jobs:
             
           if [ -n "$SG_INFO" ] && [ "$SG_INFO" != "None" ]; then
             SG_ID=$(echo "$SG_INFO" | awk '{print $1}')
-            echo "Importing security group $SG_NAME ($SG_ID)"
-            terraform import "aws_security_group.$SG_VAR" "$SG_ID" || \
-              echo "Failed to import security group $SG_NAME, continuing..."
+            
+            # Check if already in state with a different resource name
+            CURRENT_SG=$(terraform state list | grep "^aws_security_group\." | xargs -I{} terraform state show {} | grep -E '^id\s+=' | grep "$SG_ID" || true)
+            
+            if [ -n "$CURRENT_SG" ]; then
+              echo "⚠️ Security group $SG_NAME ($SG_ID) is already managed by Terraform with a different resource name"
+              echo "   $CURRENT_SG"
+              echo "   Skipping import as it's already managed"
+            elif terraform state show "aws_security_group.$SG_VAR" >/dev/null 2>&1; then
+              echo "✅ Security group $SG_NAME is already in state"
+            else
+              echo "Importing security group $SG_NAME ($SG_ID)"
+              if ! terraform import "aws_security_group.$SG_VAR" "$SG_ID" 2>/tmp/import_error; then
+                if grep -q "already managed by Terraform" /tmp/import_error; then
+                  echo "⚠️ Security group $SG_NAME is already managed by Terraform"
+                  echo "   This usually means the security group is already managed by another resource"
+                  echo "   or was previously imported with a different name."
+                else
+                  cat /tmp/import_error
+                  echo "❌ Failed to import security group $SG_NAME"
+                fi
+                rm -f /tmp/import_error
+              fi
+            fi
           else
-            echo "Security group $SG_NAME not found, will be created"
+            echo "ℹ️ Security group $SG_NAME not found, it will be created"
           fi
         done
         
