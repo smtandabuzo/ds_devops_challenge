@@ -170,14 +170,175 @@ resource "aws_autoscaling_group" "ecs_asg" {
       # Ignore changes to desired_capacity as they are managed by auto-scaling
       desired_capacity,
       # Ignore changes to target_group_arns as they are managed by ECS
+      target_group_arns
+    ]
+  }
 }
+
+# Security Group for ECS Instances
+resource "aws_security_group" "ecs_instances" {
+  name        = "${var.app_name}-ecs-instances-sg"
+  description = "Security group for ECS instances"
+  vpc_id      = aws_vpc.main.id
+
+  # Allow all outbound traffic
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Allow SSH access (for debugging)
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   # Allow HTTP/HTTPS traffic
   ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-{{ ... }}
-    Name = "${var.app_name}-minio-data"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Allow MinIO API and Console access
+  ingress {
+    from_port   = 9000
+    to_port     = 9001
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.app_name}-ecs-instances-sg"
+  }
+}
+
+# IAM Role for ECS Tasks
+resource "aws_iam_role" "ecs_task_role" {
+  name = "${var.app_name}-ecs-task-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+      },
+    ]
+  })
+
+  tags = {
+    Name = "${var.app_name}-ecs-task-role"
+  }
+}
+
+# IAM Role for ECS Task Execution
+resource "aws_iam_role" "ecs_task_execution_role" {
+  name = "${var.app_name}-ecs-task-execution-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+      },
+    ]
+  })
+
+  tags = {
+    Name = "${var.app_name}-ecs-task-execution-role"
+  }
+}
+
+# Attach the AmazonECSTaskExecutionRolePolicy to the execution role
+resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
+  role       = aws_iam_role.ecs_task_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+# Attach the CloudWatch Logs policy to the execution role
+resource "aws_iam_role_policy_attachment" "ecs_task_execution_cloudwatch_policy" {
+  role       = aws_iam_role.ecs_task_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+}
+
+# IAM Instance Profile for ECS Instances
+resource "aws_iam_instance_profile" "ecs_agent" {
+  name = "${var.app_name}-ecs-agent"
+  role = aws_iam_role.ecs_instance_role.name
+}
+
+# IAM Role for ECS Instances
+resource "aws_iam_role" "ecs_instance_role" {
+  name = "${var.app_name}-ecs-instance-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = ["ec2.amazonaws.com", "ecs-tasks.amazonaws.com"]
+        }
+      },
+    ]
+  })
+
+  tags = {
+    Name = "${var.app_name}-ecs-instance-role"
+  }
+}
+
+# Attach necessary policies to the ECS instance role
+resource "aws_iam_role_policy_attachment" "ecs_ec2_role" {
+  role       = aws_iam_role.ecs_instance_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_ec2_cloudwatch_policy" {
+  role       = aws_iam_role.ecs_instance_role.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+}
+
+# EC2 Key Pair for SSH access
+resource "aws_key_pair" "ec2_key_pair" {
+  key_name   = "${var.app_name}-key-pair"
+  public_key = file("~/.ssh/id_rsa.pub")  # Update this path to your public key
+}
+
+# Data source for ECS-optimized AMI
+data "aws_ami" "ecs_optimized" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-ecs-hvm-*-x86_64-ebs"]
+  }
+}
+
+# MinIO ECS Task Definition
+resource "aws_ecs_task_definition" "minio" {
+  family                   = "${var.app_name}-minio"
+  network_mode             = "bridge"
+  requires_compatibilities = ["EC2"]
+  cpu                      = 512
+  memory                   = 1024
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+  task_role_arn            = aws_iam_role.ecs_task_role.arn
   }
 }
 
