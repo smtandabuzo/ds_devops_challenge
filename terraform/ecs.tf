@@ -22,20 +22,19 @@ resource "aws_cloudwatch_log_group" "app" {
 }
 
 resource "aws_ecs_task_definition" "app" {
-  family                   = var.app_name
+  family                   = "${var.app_name}-app" # Changed to avoid conflict with MinIO
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   cpu                      = var.fargate_cpu
   memory                   = var.fargate_memory
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_role.arn
-  
-  # Add a unique suffix to the task definition name
+
   container_definitions = jsonencode([
     {
-      name        = var.app_name
-      image       = "${aws_ecr_repository.app.repository_url}:${var.image_tag}" # Use image_tag variable
-      essential   = true
+      name      = "${var.app_name}-app" # Changed to avoid conflict with MinIO
+      image     = "${aws_ecr_repository.app.repository_url}:${var.image_tag}"
+      essential = true
       environment = [
         {
           name  = "MINIO_ACCESS_KEY"
@@ -71,11 +70,14 @@ resource "aws_ecs_task_definition" "app" {
 }
 
 resource "aws_ecs_service" "app" {
-  name            = "${var.app_name}-service"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.app.arn
-  desired_count   = var.app_count
-  launch_type     = "FARGATE"
+  name                    = "${var.app_name}-service"
+  cluster                 = aws_ecs_cluster.main.id
+  task_definition         = aws_ecs_task_definition.app.arn
+  desired_count           = var.app_count
+  launch_type             = "FARGATE"
+  enable_ecs_managed_tags = true
+  propagate_tags          = "SERVICE"
+  enable_execute_command  = true
 
   network_configuration {
     security_groups  = [aws_security_group.ecs_tasks.id]
@@ -85,7 +87,7 @@ resource "aws_ecs_service" "app" {
 
   load_balancer {
     target_group_arn = aws_lb_target_group.app.arn
-    container_name   = "${var.app_name}-container"
+    container_name   = "${var.app_name}-app" # Updated to match container name
     container_port   = var.app_port
   }
 
@@ -94,6 +96,8 @@ resource "aws_ecs_service" "app" {
   }
 
   depends_on = [
+    aws_ecs_service.minio,
+    aws_security_group.ecs_tasks,
     aws_lb_listener.http_forward,
     aws_iam_role_policy_attachment.ecs_task_execution_role_policy
   ]

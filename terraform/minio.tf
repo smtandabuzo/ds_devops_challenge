@@ -124,19 +124,19 @@ resource "aws_iam_instance_profile" "ecs_agent" {
 # Auto Scaling Group for ECS Instances
 resource "aws_autoscaling_group" "ecs_asg" {
   # Add a name_prefix instead of name to allow for zero-downtime updates
-  name_prefix          = "${var.app_name}-asg-"
-  vpc_zone_identifier  = aws_subnet.public[*].id
-  min_size             = 1
-  max_size             = 1 # Keep it to 1 for free tier
-  desired_capacity     = 1
-  
+  name_prefix         = "${var.app_name}-asg-"
+  vpc_zone_identifier = aws_subnet.public[*].id
+  min_size            = 1
+  max_size            = 1 # Keep it to 1 for free tier
+  desired_capacity    = 1
+
   # Add health check configuration
   health_check_type         = "EC2"
   health_check_grace_period = 300
-  
+
   # Add termination policies
   termination_policies = ["OldestLaunchConfiguration", "OldestInstance", "Default"]
-  
+
   # Add instance refresh to handle rolling updates
   instance_refresh {
     strategy = "Rolling"
@@ -162,7 +162,7 @@ resource "aws_autoscaling_group" "ecs_asg" {
     value               = ""
     propagate_at_launch = true
   }
-  
+
   # Add lifecycle to handle updates and replacements
   lifecycle {
     create_before_destroy = true
@@ -316,7 +316,7 @@ resource "aws_iam_role_policy_attachment" "ecs_ec2_cloudwatch_policy" {
 # EC2 Key Pair for SSH access
 resource "aws_key_pair" "ec2_key_pair" {
   key_name   = "${var.app_name}-key-pair"
-  public_key = file("~/.ssh/id_rsa.pub")  # Update this path to your public key
+  public_key = file("~/.ssh/id_rsa.pub") # Update this path to your public key
 }
 
 # Data source for ECS-optimized AMI
@@ -339,14 +339,14 @@ resource "aws_ecs_task_definition" "minio" {
   memory                   = 1024
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_role.arn
-  
+
   container_definitions = jsonencode([
     {
-      name         = "minio"
-      image        = "minio/minio:latest"
-      cpu          = 512
-      memory       = 1024
-      essential    = true
+      name      = "minio"
+      image     = "minio/minio:latest"
+      cpu       = 512
+      memory    = 1024
+      essential = true
       portMappings = [
         {
           containerPort = 9000
@@ -387,7 +387,7 @@ resource "aws_ecs_task_definition" "minio" {
       }
     }
   ])
-  
+
   volume {
     name      = "minio-data"
     host_path = "/mnt/minio-data"
@@ -406,13 +406,13 @@ resource "aws_ecs_service" "minio" {
   task_definition = aws_ecs_task_definition.minio.arn
   launch_type     = "EC2"
   desired_count   = 1
-  
+
   service_registries {
     registry_arn   = aws_service_discovery_service.minio.arn
     container_name = "minio"
     container_port = 9001
   }
-  
+
   # Load balancer configuration
   load_balancer {
     target_group_arn = aws_lb_target_group.minio.arn

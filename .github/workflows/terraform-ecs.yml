@@ -6,13 +6,7 @@ on:
       - main
       - submission/sazimtandabuzo
     paths:
-      - 'terraform/**'
-      - '.github/workflows/terraform-ecs.yml'
-  pull_request:
-    branches: [ main ]
-    paths:
-      - 'terraform/**'
-      - '.github/workflows/terraform-ecs.yml'
+      - '**'  # Watch all files for changes
   workflow_dispatch:
     inputs:
       cleanup:
@@ -120,7 +114,7 @@ jobs:
 
   build-and-push-ecr:
     name: Build and Push to ECR
-    needs: deploy-terraform
+    needs: validate-terraform  # Only depend on validation
     runs-on: ubuntu-latest
     
     steps:
@@ -158,7 +152,7 @@ jobs:
 
   deploy-terraform:
     name: Deploy Terraform (Creates ECR Repo & Infrastructure)
-    needs: test-terraform-plan
+    needs: [test-terraform-plan, build-and-push-ecr]
     runs-on: ubuntu-latest
     
     steps:
