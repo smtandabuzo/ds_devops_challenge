@@ -1,4 +1,14 @@
+# Try to find an existing VPC first
+data "aws_vpc" "existing" {
+  count = var.use_existing_vpc ? 1 : 0
+  tags = {
+    Name = "${var.app_name}-vpc"
+  }
+}
+
+# Create a new VPC only if not using an existing one
 resource "aws_vpc" "main" {
+  count                = var.use_existing_vpc ? 0 : 1
   cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
   enable_dns_support   = true
@@ -8,10 +18,29 @@ resource "aws_vpc" "main" {
   }
 }
 
+# Use either the existing VPC or the newly created one
+locals {
+  vpc_id = var.use_existing_vpc ? data.aws_vpc.existing[0].id : aws_vpc.main[0].id
+}
+
+# Find existing subnets if using existing VPC
+data "aws_subnets" "existing_public" {
+  count = var.use_existing_vpc ? 1 : 0
+  filter {
+    name   = "vpc-id"
+    values = [local.vpc_id]
+  }
+  filter {
+    name   = "tag:Name"
+    values = ["${var.app_name}-public-*"]
+  }
+}
+
+# Create new subnets only if not using existing ones
 resource "aws_subnet" "public" {
-  count                   = 2
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = cidrsubnet(aws_vpc.main.cidr_block, 8, count.index)
+  count                   = var.use_existing_vpc ? 0 : 2
+  vpc_id                  = local.vpc_id
+  cidr_block              = cidrsubnet(var.vpc_cidr, 8, count.index)
   availability_zone       = data.aws_availability_zones.available.names[count.index]
   map_public_ip_on_launch = true
 
@@ -20,20 +49,54 @@ resource "aws_subnet" "public" {
   }
 }
 
+# Use either existing or new subnets
+locals {
+  public_subnet_ids = var.use_existing_vpc ? data.aws_subnets.existing_public[0].ids : aws_subnet.public[*].id
+}
+
+# Find existing IGW if using existing VPC
+data "aws_internet_gateway" "existing" {
+  count  = var.use_existing_vpc ? 1 : 0
+  filter {
+    name   = "attachment.vpc-id"
+    values = [local.vpc_id]
+  }
+}
+
+# Create new IGW only if not using existing one
 resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
+  count  = var.use_existing_vpc ? 0 : 1
+  vpc_id = local.vpc_id
 
   tags = {
     Name = "${var.app_name}-igw"
   }
 }
 
+# Use either existing or new IGW
+locals {
+  igw_id = var.use_existing_vpc ? data.aws_internet_gateway.existing[0].id : aws_internet_gateway.main[0].id
+}
+
+# Find existing route table if using existing VPC
+data "aws_route_tables" "existing_public" {
+  count  = var.use_existing_vpc ? 1 : 0
+  vpc_id = local.vpc_id
+  
+  filter {
+    name   = "tag:Name"
+    values = ["${var.app_name}-public-rt"]
+  }
+}
+
+# Create new route table only if not using existing one
 resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
+  count  = var.use_existing_vpc ? 0 : 1
+  vpc_id = local.vpc_id
 
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.main.id
+    gateway_id = local.igw_id
   }
 
   tags = {
@@ -41,16 +104,23 @@ resource "aws_route_table" "public" {
   }
 }
 
+# Create route table associations for new subnets
 resource "aws_route_table_association" "public" {
-  count          = length(aws_subnet.public)
-  subnet_id      = aws_subnet.public[count.index].id
-  route_table_id = aws_route_table.public.id
+  for_each = var.use_existing_vpc ? toset([]) : toset([for i, _ in aws_subnet.public : tostring(i)])
+  
+  subnet_id      = aws_subnet.public[tonumber(each.key)].id
+  route_table_id = aws_route_table.public[0].id
+}
+
+# Use either existing or new route table ID
+locals {
+  public_route_table_id = var.use_existing_vpc ? data.aws_route_tables.existing_public[0].ids[0] : aws_route_table.public[0].id
 }
 
 resource "aws_security_group" "alb" {
   name        = "${var.app_name}-alb-sg"
   description = "Allow HTTP/HTTPS traffic"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   ingress {
     from_port   = 80
@@ -74,14 +144,13 @@ resource "aws_security_group" "alb" {
   }
 
   tags = {
-    Name = "${var.app_name}-alb-sg"
   }
 }
 
 resource "aws_security_group" "ecs_tasks" {
   name        = "${var.app_name}-ecs-tasks-sg"
-  description = "Allow inbound access from ALB only"
-  vpc_id      = aws_vpc.main.id
+  description = "Allow inbound access from the ALB only"
+  vpc_id      = local.vpc_id
 
   ingress {
     protocol        = "tcp"

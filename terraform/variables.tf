@@ -46,3 +46,21 @@ variable "image_tag" {
   type        = string
   default     = "latest"
 }
+
+variable "use_existing_vpc" {
+  description = "Whether to use an existing VPC or create a new one"
+  type        = bool
+  default     = true
+}
+
+variable "vpc_cidr" {
+  description = "CIDR block for the VPC"
+  type        = string
+  default     = "10.0.0.0/16"
+}
+
+variable "public_subnet_cidrs" {
+  description = "List of public subnet CIDR blocks"
+  type        = list(string)
+  default     = ["10.0.1.0/24", "10.0.2.0/24"]
+}
