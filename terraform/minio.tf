@@ -170,132 +170,37 @@ resource "aws_autoscaling_group" "ecs_asg" {
       # Ignore changes to desired_capacity as they are managed by auto-scaling
       desired_capacity,
       # Ignore changes to target_group_arns as they are managed by ECS
-      target_group_arns,
-      # Ignore changes to load_balancers as they are managed by ECS
-      load_balancers,
-    ]
-  }
-  
-  # Add depends_on to ensure proper cleanup
-  depends_on = [
-    aws_launch_template.ecs_launch_template,
-    aws_iam_instance_profile.ecs_agent
-  ]
 }
-
-data "aws_ami" "ecs_optimized" {
-  most_recent = true
-  owners      = ["amazon"]
-
-  filter {
-    name   = "name"
-    values = ["amzn2-ami-ecs-hvm-*-x86_64-ebs"]
-  }
-}
-
-# Security Group for ECS Instances
-resource "aws_security_group" "ecs_instances" {
-  name        = "${var.app_name}-ecs-instances-sg"
-  description = "Security group for ECS instances"
-  vpc_id      = aws_vpc.main.id
-
-  # Allow all outbound traffic
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  # Allow SSH access (for debugging)
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
   # Allow HTTP/HTTPS traffic
   ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  # Allow MinIO API access
-  ingress {
-    from_port   = 9000
-    to_port     = 9000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "MinIO API"
-  }
-
-  # Allow MinIO Console access
-  ingress {
-    from_port   = 9001
-    to_port     = 9001
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "MinIO Console"
-  }
-
-  # Allow all traffic within the security group
-  ingress {
-    from_port = 0
-    to_port   = 0
-    protocol  = "-1"
-    self      = true
-  }
-
-  tags = {
-    Name = "${var.app_name}-ecs-instances-sg"
-  }
-}
-
-# MinIO EBS Volume
-resource "aws_ebs_volume" "minio_data" {
-  availability_zone = data.aws_availability_zones.available.names[0]
-  size              = 20 # GB
-  type              = "gp3"
-  encrypted         = true
-
-  tags = {
+{{ ... }}
     Name = "${var.app_name}-minio-data"
   }
 }
 
 resource "aws_ecs_task_definition" "minio" {
-  family                   = "minio"
-  network_mode             = "bridge" # Using bridge mode for EC2 launch type
+  family                   = "${var.app_name}-minio"
+  network_mode             = "bridge"
   requires_compatibilities = ["EC2"]
-  cpu                      = 256
-  memory                   = 768 # Reduced to 768MB to fit t3.small
+  cpu                      = 512
+  memory                   = 1024
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_role.arn
-
-  volume {
-    name      = "minio-data"
-    host_path = "/mnt/minio-data"
-  }
-
+  
   container_definitions = jsonencode([
     {
-      name      = "minio"
-      image     = "minio/minio:latest"
-      essential = true
-      command   = ["server", "/data", "--console-address", ":9001"]
+      name         = "minio"
+      image        = "minio/minio:latest"
+      cpu          = 512
+      memory       = 1024
+      essential    = true
       portMappings = [
         {
           containerPort = 9000
+          hostPort      = 9000
           protocol      = "tcp"
         },
         {
@@ -304,6 +209,7 @@ resource "aws_ecs_task_definition" "minio" {
           protocol      = "tcp"
         }
       ]
+      command = ["server", "/data", "--console-address", ":9001"]
       environment = [
         {
           name  = "MINIO_ROOT_USER"
@@ -314,14 +220,6 @@ resource "aws_ecs_task_definition" "minio" {
           value = var.minio_secret_key
         }
       ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = "/ecs/minio"
-          awslogs-region        = var.region
-          awslogs-stream-prefix = "ecs"
-        }
-      }
       mountPoints = [
         {
           sourceVolume  = "minio-data"
@@ -329,39 +227,50 @@ resource "aws_ecs_task_definition" "minio" {
           readOnly      = false
         }
       ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = "/ecs/${var.app_name}-minio"
+          awslogs-region        = var.region
+          awslogs-stream-prefix = "ecs"
+        }
+      }
     }
   ])
-}
+  
+  volume {
+    name      = "minio-data"
+    host_path = "/mnt/minio-data"
+  }
 
-resource "aws_ecs_service" "minio" {
-  name            = "minio-service"
+  tags = {
+    Environment = var.environment
+    Application = "minio"
+  }
+}  name            = "${var.app_name}-minio-service"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.minio.arn
   launch_type     = "EC2"
   desired_count   = 1
-
-  # Service discovery
   service_registries {
     registry_arn   = aws_service_discovery_service.minio.arn
     container_name = "minio"
     container_port = 9001
   }
 
-  # Load balancer configuration - temporarily commented out for target group recreation
-  # load_balancer {
-  #   target_group_arn = aws_lb_target_group.minio.arn
-  #   container_name   = "minio"
-  #   container_port   = 9001
-  # }
+  # Load balancer configuration
+  load_balancer {
+    target_group_arn = aws_lb_target_group.minio.arn
+    container_name   = "minio"
+    container_port   = 9000
+  }
 
-  # Ensure the EBS volume is attached before starting the service
   depends_on = [
     aws_iam_role_policy_attachment.ecs_task_execution_role_policy,
     aws_autoscaling_group.ecs_asg,
     aws_lb_target_group.minio
   ]
 
-  # Add a lifecycle rule to ignore changes to the task definition
   lifecycle {
     ignore_changes = [task_definition, desired_count]
   }
