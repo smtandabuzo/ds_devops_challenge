@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e  # Exit immediately if a command exits with a non-zero status
 
-cd ${{ env.TERRAFORM_WORKING_DIR:-./terraform}}
+# Set working directory from environment variable or use default
+TERRAFORM_DIR="${TERRAFORM_WORKING_DIR:-./terraform}"
+cd "$TERRAFORM_DIR"
 
 # Initialize Terraform
 echo "=== Initializing Terraform ==="
