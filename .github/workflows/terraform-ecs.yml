@@ -95,13 +95,12 @@ jobs:
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         terraform init
         terraform plan -input=false -var-file=terraform.tfvars
-    
     - name: Upload Terraform Plan
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: tfplan
         path: ${{ env.TERRAFORM_WORKING_DIR }}/plan.tfplan
-        if-no-files-found: error
+      if-no-files-found: error
 
   build-and-push-ecr:
     name: Build and Push to ECR
@@ -173,6 +172,9 @@ jobs:
     needs: deploy-terraform
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    
+    outputs:
+      alb_dns: ${{ steps.alb.outputs.ALB_DNS }}
     
     steps:
     - name: Configure AWS Credentials
