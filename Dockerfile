@@ -6,7 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_DEFAULT_TIMEOUT=100
+    PIP_DEFAULT_TIMEOUT=100 \
+    # Set default values that can be overridden at runtime
+    MINIO_ENDPOINT=minio:9000 \
+    MINIO_ACCESS_KEY=minioadmin \
+    MINIO_SECRET_KEY=minioadmin
 
 # Install system dependencies required for building
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -54,10 +58,12 @@ COPY --chown=appuser:appgroup resources/ .
 # Install application dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Set environment variables for Minio
+# Ensure sensitive environment variables are not hardcoded
+RUN echo "MINIO_ACCESS_KEY and MINIO_SECRET_KEY should be provided at runtime" \
+    && echo "using environment variables or AWS Secrets Manager"
+
+# Set non-sensitive environment variables
 ENV MINIO_ENDPOINT=minio:9000 \
-    MINIO_ACCESS_KEY=minioadmin \
-    MINIO_SECRET_KEY=minioadmin \
     BUCKET_NAME=analytics-data \
     GUNICORN_CMD_ARGS="--bind=0.0.0.0:5000 --workers=4 --threads=2 --worker-class=gthread --log-level=info --timeout=120 --worker-tmp-dir /dev/shm"
 
