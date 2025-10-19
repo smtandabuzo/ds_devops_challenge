@@ -94,6 +94,7 @@ jobs:
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         terraform init
+        mkdir -p ${{ env.TERRAFORM_WORKING_DIR }}
         terraform plan -input=false \
           -var="region=${{ env.AWS_REGION }}" \
           -var="environment=production" \
@@ -102,7 +103,8 @@ jobs:
           -var="app_count=2" \
           -var="minio_access_key=minioadmin" \
           -var="minio_secret_key=minioadmin" \
-          -var="image_tag=latest"
+          -var="image_tag=latest" \
+          -out=${{ env.TERRAFORM_WORKING_DIR }}/plan.tfplan
     - name: Upload Terraform Plan
       uses: actions/upload-artifact@v4
       with:
