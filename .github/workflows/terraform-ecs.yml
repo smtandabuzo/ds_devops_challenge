@@ -752,17 +752,36 @@ jobs:
         echo "\n=== Importing S3 Resources ==="
         BUCKET_NAME="${{ env.ECR_REPOSITORY }}-analytics-data-$(aws sts get-caller-identity --query Account --output text)"
         if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
-          echo "Importing S3 Bucket: $BUCKET_NAME"
-          terraform import "aws_s3_bucket.analytics_data" "$BUCKET_NAME" || \
-            echo "S3 Bucket import failed or already exists, continuing..."
-            
-          echo "Importing S3 Bucket Versioning..."
-          terraform import "aws_s3_bucket_versioning.analytics_data_versioning[0]" "$BUCKET_NAME" || \
-            echo "S3 Bucket Versioning import failed or already exists, continuing..."
-            
-          echo "Importing S3 Bucket Encryption..."
-          terraform import "aws_s3_bucket_server_side_encryption_configuration.analytics_data_encryption[0]" "$BUCKET_NAME" || \
-            echo "S3 Bucket Encryption import failed or already exists, continuing..."
+          # Check if the bucket is already in the state
+          if ! terraform state show 'aws_s3_bucket.analytics_data' >/dev/null 2>&1; then
+            echo "Importing S3 Bucket: $BUCKET_NAME"
+            if ! terraform import "aws_s3_bucket.analytics_data" "$BUCKET_NAME" 2>/tmp/s3_import_error; then
+              if grep -q "already managed by Terraform" /tmp/s3_import_error; then
+                echo "⚠️  S3 Bucket is already managed by Terraform"
+                echo "   Run 'terraform state list | grep $BUCKET_NAME' to find the existing resource"
+                echo "   You may need to update your configuration to reference the existing resource"
+              else
+                cat /tmp/s3_import_error
+                echo "❌ Failed to import S3 Bucket"
+              fi
+              rm -f /tmp/s3_import_error
+            else
+              echo "✅ Successfully imported S3 Bucket"
+              
+              # Only try to import versioning if the bucket import was successful
+              echo "Importing S3 Bucket Versioning..."
+              terraform import "aws_s3_bucket_versioning.analytics_data_versioning[0]" "$BUCKET_NAME" 2>/dev/null || \
+                echo "S3 Bucket Versioning import failed or already exists, continuing..."
+                
+              echo "Importing S3 Bucket Encryption..."
+              terraform import "aws_s3_bucket_server_side_encryption_configuration.analytics_data_encryption[0]" "$BUCKET_NAME" 2>/dev/null || \
+                echo "S3 Bucket Encryption import failed or already exists, continuing..."
+            fi
+          else
+            echo "✅ S3 Bucket is already in state"
+          fi
+        else
+          echo "ℹ️  S3 Bucket $BUCKET_NAME not found, it will be created"
         fi
         
         # 5. Load Balancer Resources
