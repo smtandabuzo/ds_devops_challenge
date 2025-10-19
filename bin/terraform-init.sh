@@ -9,21 +9,23 @@ cd "$TERRAFORM_DIR"
 echo "=== Initializing Terraform ==="
 terraform init
 
+# Check if state exists
+STATE_EXISTS=$(terraform state list 2>/dev/null || echo "false")
+
 # Create workspace if it doesn't exist
 echo -e "\n=== Setting up Terraform workspace ==="
 if ! terraform workspace list | grep -q default; then
     echo "Creating default workspace..."
-    terraform workspace new default
+    terraform workspace new default || true
 else
-    terraform workspace select default
+    terraform workspace select default || true
 fi
 
-# Create initial state if it doesn't exist
-if [ ! -f "terraform.tfstate" ] && [ ! -f "terraform.tfstate.backup" ]; then
-    echo -e "\n=== Creating initial Terraform state ==="
-    terraform state pull > terraform.tfstate || {
-        echo "Failed to create initial state file"
-        exit 1
+# If state doesn't exist, create an empty one
+if [ "$STATE_EXISTS" = "false" ]; then
+    echo -e "\n=== Initializing empty Terraform state ==="
+    terraform apply -auto-approve -target=null_resource.initial_state || {
+        echo "No resources to create for initial state. This is normal for a new environment."
     }
     echo "Initial empty state created."
 fi
@@ -46,7 +48,7 @@ terraform plan -input=false -no-color \
     -out=plan.tfplan
 
 # Check if there are any changes needed
-if terraform show -no-color plan.tfplan | grep -q 'No changes.'; then
+if terraform show -no-color plan.tfplan 2>/dev/null | grep -q 'No changes.'; then
     echo "No changes needed, infrastructure is up-to-date"
     echo "changes_needed=false" >> $GITHUB_OUTPUT
 else
