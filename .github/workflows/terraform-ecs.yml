@@ -145,42 +145,39 @@ jobs:
           ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
-        build-args: |
           BUILDKIT_INLINE_CACHE=1
 
   deploy-terraform:
-    name: 'Deploy Terraform'
-    needs: [test-terraform-plan, build-and-push-ecr]
-    if: github.ref == 'refs/heads/main'
+    name: Deploy Terraform
+    needs: test-terraform-plan
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/submission/sazimtandabuzo'  # Run on main or feature branch
     runs-on: ubuntu-latest
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
     
+    - name: Download Terraform Plan
+      uses: actions/download-artifact@v4
+      with:
+        name: tfplan
+        path: ${{ env.TERRAFORM_WORKING_DIR }}
+    
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: ${{ env.TERRAFORM_VERSION }}
     
-    - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-    
     - name: Terraform Apply
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         terraform init
-        terraform apply -auto-approve -var-file=terraform.tfvars
+        terraform apply -auto-approve plan.tfplan
 
   test-deployment:
     name: Test Deployment
     needs: deploy-terraform
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/submission/sazimtandabuzo'
     
     outputs:
       alb_dns: ${{ steps.alb.outputs.ALB_DNS }}
