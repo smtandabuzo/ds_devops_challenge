@@ -397,17 +397,22 @@ resource "aws_ecs_task_definition" "minio" {
     Environment = var.environment
     Application = "minio"
   }
-}  name            = "${var.app_name}-minio-service"
+}
+
+# ECS Service for MinIO
+resource "aws_ecs_service" "minio" {
+  name            = "${var.app_name}-minio-service"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.minio.arn
   launch_type     = "EC2"
   desired_count   = 1
+  
   service_registries {
     registry_arn   = aws_service_discovery_service.minio.arn
     container_name = "minio"
     container_port = 9001
   }
-
+  
   # Load balancer configuration
   load_balancer {
     target_group_arn = aws_lb_target_group.minio.arn
