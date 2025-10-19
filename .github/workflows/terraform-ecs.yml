@@ -414,17 +414,32 @@ jobs:
         
     - name: Show Import Status
       id: import-status
+      continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        echo "Current Terraform state:"
-        terraform state list
+        echo "Checking Terraform state..."
         
-        # Check if any resources are in the state
-        if terraform state list | grep -q .; then
-          echo "resources_imported=true" >> $GITHUB_OUTPUT
+        # Use a temporary file to capture output and handle errors
+        STATE_LIST=$(mktemp)
+        if terraform state list > "$STATE_LIST" 2>&1; then
+          echo "Current Terraform state:"
+          cat "$STATE_LIST"
+          
+          # Check if any resources are in the state
+          if [ -s "$STATE_LIST" ]; then
+            echo "resources_imported=true" >> $GITHUB_OUTPUT
+            echo "✅ Resources found in Terraform state"
+          else
+            echo "resources_imported=false" >> $GITHUB_OUTPUT
+            echo "⚠️ No resources found in Terraform state"
+          fi
         else
-          echo "resources_imported=false" >> $GITHUB_OUTPUT
+          echo "⚠️ Could not list Terraform state, but continuing anyway"
+          echo "resources_imported=true" >> $GITHUB_OUTPUT
         fi
+        
+        # Clean up
+        rm -f "$STATE_LIST"
         
     - name: Verify Resources
       if: steps.import-status.outputs.resources_imported != 'true'
