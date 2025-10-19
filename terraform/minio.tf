@@ -241,7 +241,7 @@ resource "aws_ecs_service" "minio" {
 }
 
 resource "aws_lb_target_group" "minio" {
-  name        = "${var.app_name}-minio-tg-new-${substr(md5(timestamp()), 0, 5)}"
+  name        = "${var.app_name}-minio-tg"
   port        = 9000
   protocol    = "HTTP"
   target_type = "ip"
@@ -251,7 +251,6 @@ resource "aws_lb_target_group" "minio" {
     enabled             = true
     path                = "/minio/health/live"
     port                = "traffic-port"
-{{ ... }}
     healthy_threshold   = 2
     unhealthy_threshold = 2
     timeout             = 5
@@ -262,6 +261,11 @@ resource "aws_lb_target_group" "minio" {
   tags = {
     Name = "${var.app_name}-minio-tg"
   }
+
+  # Ensure the target group is deleted before the security group
+  depends_on = [
+    aws_security_group.ecs_instances
+  ]
 }
 
 # ALB Listener Rule for MinIO - temporarily commented out for cleanup
