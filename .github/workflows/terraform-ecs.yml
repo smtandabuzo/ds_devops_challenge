@@ -75,7 +75,18 @@ jobs:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
-    
+
+    - name: Debug AWS Configuration
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+      run: |
+        echo "AWS_ACCESS_KEY_ID: ${#AWS_ACCESS_KEY_ID}"
+        echo "AWS_REGION: $AWS_REGION"
+        aws sts get-caller-identity
+        echo "Exit code: $?"
+
     - name: Terraform Plan
       id: plan
       run: |

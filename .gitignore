@@ -65,7 +65,7 @@ secrets/
 
 # Terraform
 ## Local .terraform directories
-**/.terraform/*
+terraform/.terraformold/*
 
 ## .tfstate files
 *.tfstate
