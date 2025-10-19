@@ -13,6 +13,13 @@ on:
     paths:
       - 'terraform/**'
       - '.github/workflows/terraform-ecs.yml'
+  workflow_dispatch:
+    inputs:
+      cleanup:
+        description: 'Clean up all resources (use with caution!)'
+        required: false
+        default: 'false'
+        type: boolean
 
 env:
   AWS_REGION: us-east-1
@@ -131,18 +138,23 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v1
 
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+      with:
+        driver: docker
+        
     - name: Build, tag, and push image to Amazon ECR
       id: build-image
       uses: docker/build-push-action@v4
       with:
         context: .
-        file: ./Dockerfile  # Explicitly point to the Dockerfile
+        file: ./Dockerfile
         push: true
         tags: |
           ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
           ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:buildcache
+        cache-to: type=inline
         build-args: |
           BUILDKIT_INLINE_CACHE=1
 
@@ -224,9 +236,145 @@ jobs:
         # Test MinIO API (should return XML with ListAllMyBucketsResult)
         curl -s http://${{ steps.alb.outputs.ALB_DNS }}:9000
 
+  cleanup-resources:
+    name: ${{ github.event_name == 'workflow_dispatch' && 'Manual Cleanup' || 'Cleanup on Failure' }}
+    needs: ${{ github.event_name == 'workflow_dispatch' && '[]' || 'deploy-terraform, test-deployment' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || failure() }}
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TERRAFORM_VERSION }}
+        
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: List existing resources (for debugging)
+      run: |
+        echo "Listing existing ECS clusters:"
+        aws ecs list-clusters || echo "No ECS clusters found or error listing clusters"
+        
+        echo "\nListing existing ECR repositories:"
+        aws ecr describe-repositories || echo "No ECR repositories found or error listing repositories"
+        
+        echo "\nListing existing ALBs:"
+        aws elbv2 describe-load-balancers || echo "No ALBs found or error listing ALBs"
+    
+    - name: Terraform Destroy
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        terraform init
+        
+        # First, try to import any existing state to avoid errors
+        terraform import -var="region=${{ env.AWS_REGION }}" \
+          -var="environment=production" \
+          -var="app_name=${{ env.ECR_REPOSITORY }}" \
+          -var="app_port=5000" \
+          -var="minio_access_key=minioadmin" \
+          -var="minio_secret_key=minioadmin" \
+          -var="image_tag=latest" \
+          -auto-approve || echo "Import failed, continuing with destroy..."
+        
+        # Then destroy
+        terraform destroy -auto-approve \
+          -var="region=${{ env.AWS_REGION }}" \
+          -var="environment=production" \
+          -var="app_name=${{ env.ECR_REPOSITORY }}" \
+          -var="app_port=5000" \
+          -var="minio_access_key=minioadmin" \
+          -var="minio_secret_key=minioadmin" \
+          -var="image_tag=latest"
+
+  # Store successful deployment information for rollback
+  store-version:
+    name: Store Version
+    needs: [deploy-terraform, test-deployment]
+    if: success() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Store current version
+      run: |
+        # In a real scenario, you might want to store this in AWS SSM Parameter Store
+        # or another persistent storage
+        echo "Current deployment version: ${{ env.DEPLOYMENT_TIMESTAMP }}"
+        echo "Previous version was: ${{ env.PREVIOUS_VERSION }}"
+        # Here you would update your tracking mechanism (e.g., AWS SSM Parameter Store)
+        # aws ssm put-parameter \
+        #   --name "/${{ env.ECR_REPOSITORY }}/current_version" \
+        #   --value "${{ env.DEPLOYMENT_TIMESTAMP }}" \
+        #   --type String --overwrite
+        # aws ssm put-parameter \
+        #   --name "/${{ env.ECR_REPOSITORY }}/previous_version" \
+        #   --value "${{ env.PREVIOUS_VERSION }}" \
+        #   --type String --overwrite
+
+  rollback:
+    name: Rollback
+    needs: [deploy-terraform]
+    if: failure() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.rollback == 'true'))
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TERRAFORM_VERSION }}
+    
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Rollback to previous version
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        
+        # In a real scenario, you would fetch the previous version from your tracking system
+        # PREVIOUS_VERSION=$(aws ssm get-parameter --name "/$ECR_REPOSITORY/previous_version" --query "Parameter.Value" --output text || echo "")
+        # CURRENT_VERSION=$(aws ssm get-parameter --name "/$ECR_REPOSITORY/current_version" --query "Parameter.Value" --output text || echo "")
+        
+        # For this example, we'll use the input parameter or environment variable
+        PREVIOUS_VERSION="${{ github.event.inputs.previous_version || env.PREVIOUS_VERSION }}"
+        
+        if [ "$PREVIOUS_VERSION" == "none" ] || [ -z "$PREVIOUS_VERSION" ]; then
+          echo "No previous version found for rollback"
+          exit 1
+        fi
+        
+        echo "Rolling back to version: $PREVIOUS_VERSION"
+        
+        # Update the task definition to use the previous version
+        terraform init
+        terraform apply -auto-approve \
+          -var="region=${{ env.AWS_REGION }}" \
+          -var="environment=production" \
+          -var="app_name=${{ env.ECR_REPOSITORY }}" \
+          -var="app_port=5000" \
+          -var="app_count=2" \
+          -var="minio_access_key=minioadmin" \
+          -var="minio_secret_key=minioadmin" \
+          -var="image_tag=$PREVIOUS_VERSION"
+        
+        echo "Rollback to version $PREVIOUS_VERSION completed"
+
   notify:
     name: Notify
-    needs: [deploy-terraform, test-deployment]
+    needs: [deploy-terraform, test-deployment, cleanup-resources, store-version, rollback]
     if: always()
     runs-on: ubuntu-latest
     
@@ -235,5 +383,8 @@ jobs:
       if: always()
       run: |
         echo "Deployment completed with status: ${{ needs.deploy-terraform.result || 'unknown' }}"
+        echo "Test status: ${{ needs.test-deployment.result || 'skipped' }}"
+        echo "Rollback status: ${{ needs.rollback.result || 'not_attempted' }}"
+        echo "Workflow URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         echo "Test status: ${{ needs.test-deployment.result || 'skipped' }}"
         echo "Workflow URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
