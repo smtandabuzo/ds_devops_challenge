@@ -153,8 +153,8 @@ jobs:
         tags: |
           ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
           ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
-        cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:buildcache
-        cache-to: type=inline
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
         build-args: |
           BUILDKIT_INLINE_CACHE=1
 
