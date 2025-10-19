@@ -9,7 +9,7 @@ data "aws_vpcs" "matching" {
 }
 
 data "aws_vpc" "existing" {
-  count = var.use_existing_vpc ? 1 : 0
+  count = var.use_existing_vpc && length(data.aws_vpcs.matching[0].ids) > 0 ? 1 : 0
   id    = var.use_existing_vpc ? data.aws_vpcs.matching[0].ids[0] : null
 
   # Add additional safety filters
