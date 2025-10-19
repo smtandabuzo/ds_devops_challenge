@@ -117,8 +117,9 @@ jobs:
     needs: validate-terraform
     runs-on: ubuntu-latest
     outputs:
-      resources_imported: ${{ steps.import-status.outputs.resources_imported }}
-      vpc_id: ${{ steps.vpc-import.outputs.vpc_id }}
+      # These outputs will be set by the actual steps in the job
+      resources_imported: ${{ steps.init.outputs.resources_imported || 'false' }}
+      vpc_id: ${{ steps.init.outputs.vpc_id || '' }}
       
     steps:
     - name: Checkout code
@@ -210,33 +211,34 @@ jobs:
           fi
         done
     
-    - name: Import Security Groups
-      id: security-groups-import
+    # ============================================
+    # Security Groups and Network ACLs
+    # ============================================
+    - name: Import Security Groups and Network ACLs
+      id: security-import
       continue-on-error: true
+      needs: [vpc-import, subnets-import]
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         
         # Get VPC ID
         VPC_ID="${{ steps.vpc-import.outputs.vpc_id }}"
-        if [ -z "$VPC_ID" ]; then
-          VPC_ID=$(aws ec2 describe-vpcs \
-            --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" \
-            --query 'Vpcs[0].VpcId' \
-            --output text 2>/dev/null || echo "")
-        fi
-        
         if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
           echo "No VPC found, skipping security group imports"
           exit 0
         fi
         
-        # Define security groups to import
+        # Define security groups to import with their expected names
         declare -A SGS=(
           ["alb"]="${{ env.ECR_REPOSITORY }}-alb-sg"
           ["ecs_instances"]="${{ env.ECR_REPOSITORY }}-ecs-instances-sg"
           ["ecs_tasks"]="${{ env.ECR_REPOSITORY }}-ecs-tasks-sg"
+          ["rds"]="${{ env.ECR_REPOSITORY }}-rds-sg"
+          ["redis"]="${{ env.ECR_REPOSITORY }}-redis-sg"
+          ["elasticache"]="${{ env.ECR_REPOSITORY }}-elasticache-sg"
         )
         
+        # Import all security groups
         for SG_VAR in "${!SGS[@]}"; do
           SG_NAME="${SGS[$SG_VAR]}"
           
@@ -247,12 +249,13 @@ jobs:
           fi
           
           # Find and import security group
-          SG_ID=$(aws ec2 describe-security-groups \
+          SG_INFO=$(aws ec2 describe-security-groups \
             --filters "Name=group-name,Values=$SG_NAME" "Name=vpc-id,Values=$VPC_ID" \
-            --query 'SecurityGroups[0].GroupId' \
+            --query 'SecurityGroups[0].[GroupId,GroupName]' \
             --output text 2>/dev/null || echo "")
             
-          if [ -n "$SG_ID" ] && [ "$SG_ID" != "None" ]; then
+          if [ -n "$SG_INFO" ] && [ "$SG_INFO" != "None" ]; then
+            SG_ID=$(echo "$SG_INFO" | awk '{print $1}')
             echo "Importing security group $SG_NAME ($SG_ID)"
             terraform import "aws_security_group.$SG_VAR" "$SG_ID" || \
               echo "Failed to import security group $SG_NAME, continuing..."
@@ -260,10 +263,68 @@ jobs:
             echo "Security group $SG_NAME not found, will be created"
           fi
         done
+        
+        # Import Network ACLs
+        NACLS=$(aws ec2 describe-network-acls \
+          --filters "Name=vpc-id,Values=$VPC_ID" \
+          --query 'NetworkAcls[*].[NetworkAclId,Tags[?Key==`Name`].Value|[0]]' \
+          --output text 2>/dev/null || echo "")
+          
+        if [ -n "$NACLS" ]; then
+          echo "$NACLS" | while read -r NACL_ID NACL_NAME; do
+            if [[ "$NACL_NAME" == *"public"* ]]; then
+              if ! terraform state show 'aws_network_acl.public' >/dev/null 2>&1; then
+                echo "Importing public network ACL $NACL_ID"
+                terraform import 'aws_network_acl.public' "$NACL_ID" || \
+                  echo "Failed to import public network ACL, continuing..."
+              fi
+            elif [[ "$NACL_NAME" == *"private"* ]]; then
+              if ! terraform state show 'aws_network_acl.private' >/dev/null 2>&1; then
+                echo "Importing private network ACL $NACL_ID"
+                terraform import 'aws_network_acl.private' "$NACL_ID" || \
+                  echo "Failed to import private network ACL, continuing..."
+              fi
+            fi
+          done
+        fi
+        
+        # Import VPC Endpoints if they exist
+        VPC_ENDPOINTS=$(aws ec2 describe-vpc-endpoints \
+          --filters "Name=vpc-id,Values=$VPC_ID" \
+          --query 'VpcEndpoints[*].[VpcEndpointId,ServiceName]' \
+          --output text 2>/dev/null || echo "")
+          
+        if [ -n "$VPC_ENDPOINTS" ]; then
+          echo "$VPC_ENDPOINTS" | while read -r ENDPOINT_ID SERVICE_NAME; do
+            if [[ "$SERVICE_NAME" == *"s3"* ]]; then
+              if ! terraform state show 'aws_vpc_endpoint.s3' >/dev/null 2>&1; then
+                echo "Importing S3 VPC Endpoint $ENDPOINT_ID"
+                terraform import 'aws_vpc_endpoint.s3' "$ENDPOINT_ID" || \
+                  echo "Failed to import S3 VPC Endpoint, continuing..."
+              fi
+            elif [[ "$SERVICE_NAME" == *"ecr.api"* ]]; then
+              if ! terraform state show 'aws_vpc_endpoint.ecr_api' >/dev/null 2>&1; then
+                echo "Importing ECR API VPC Endpoint $ENDPOINT_ID"
+                terraform import 'aws_vpc_endpoint.ecr_api' "$ENDPOINT_ID" || \
+                  echo "Failed to import ECR API VPC Endpoint, continuing..."
+              fi
+            elif [[ "$SERVICE_NAME" == *"ecr.dkr"* ]]; then
+              if ! terraform state show 'aws_vpc_endpoint.ecr_dkr' >/dev/null 2>&1; then
+                echo "Importing ECR DKR VPC Endpoint $ENDPOINT_ID"
+                terraform import 'aws_vpc_endpoint.ecr_dkr' "$ENDPOINT_ID" || \
+                  echo "Failed to import ECR DKR VPC Endpoint, continuing..."
+              fi
+            fi
+          done
+        fi
     
-    - name: Import ECR Repository
+    # ============================================
+    # ECR Repository
+    # ============================================
+    - name: Import ECR Repository and Related Resources
       id: ecr-import
       continue-on-error: true
+      needs: [security-import]
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         
@@ -273,17 +334,43 @@ jobs:
           exit 0
         fi
         
+        # Import ECR Repository
         if aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} >/dev/null 2>&1; then
           echo "Importing ECR repository: ${{ env.ECR_REPOSITORY }}"
           terraform import aws_ecr_repository.app ${{ env.ECR_REPOSITORY }} || \
             echo "Failed to import ECR repository, continuing..."
+          
+          # Import ECR Lifecycle Policy if it exists
+          if aws ecr get-lifecycle-policy --repository-name ${{ env.ECR_REPOSITORY }} >/dev/null 2>&1; then
+            echo "Importing ECR Lifecycle Policy"
+            terraform import 'aws_ecr_lifecycle_policy.app' "${{ env.ECR_REPOSITORY }}" || \
+              echo "Failed to import ECR Lifecycle Policy, continuing..."
+          fi
+          
+          # Import ECR Repository Policy if it exists
+          if aws ecr get-repository-policy --repository-name ${{ env.ECR_REPOSITORY }} >/dev/null 2>&1; then
+            echo "Importing ECR Repository Policy"
+            terraform import 'aws_ecr_repository_policy.app' "${{ env.ECR_REPOSITORY }}" || \
+              echo "Failed to import ECR Repository Policy, continuing..."
+          fi
         else
           echo "ECR repository ${{ env.ECR_REPOSITORY }} not found, will be created"
         fi
+        
+        # Import ECR Pull Through Cache Rule if it exists
+        if aws ecr describe-pull-through-cache-rules --repository-name-prefix ${{ env.ECR_REPOSITORY }} --query 'pullThroughCacheRules[0].ecrRepositoryPrefix' --output text 2>/dev/null | grep -q ${{ env.ECR_REPOSITORY }}; then
+          echo "Importing ECR Pull Through Cache Rule"
+          terraform import 'aws_ecr_pull_through_cache_rule.app' "${{ env.ECR_REPOSITORY }}" || \
+            echo "Failed to import ECR Pull Through Cache Rule, continuing..."
+        fi
     
-    - name: Import S3 Bucket
+    # ============================================
+    # S3 Bucket and Related Resources
+    # ============================================
+    - name: Import S3 Bucket and Related Resources
       id: s3-import
       continue-on-error: true
+      needs: [ecr-import]
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         
@@ -293,20 +380,63 @@ jobs:
           exit 0
         fi
         
-        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        ACCOUNT_ID="${{ steps.account-id.outputs.account_id }}"
         BUCKET_NAME="${{ env.ECR_REPOSITORY }}-analytics-data-$ACCOUNT_ID"
         
         if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
           echo "Importing S3 bucket: $BUCKET_NAME"
           terraform import aws_s3_bucket.analytics_data "$BUCKET_NAME" || \
             echo "Failed to import S3 bucket, continuing..."
+          
+          # Import S3 Bucket Policy if it exists
+          if aws s3api get-bucket-policy --bucket "$BUCKET_NAME" >/dev/null 2>&1; then
+            echo "Importing S3 Bucket Policy"
+            terraform import 'aws_s3_bucket_policy.analytics_data' "$BUCKET_NAME" || \
+              echo "Failed to import S3 Bucket Policy, continuing..."
+          fi
+          
+          # Import S3 Bucket Public Access Block if it exists
+          PUBLIC_ACCESS_CONFIG=$(aws s3api get-public-access-block --bucket "$BUCKET_NAME" 2>/dev/null || echo "")
+          if [ -n "$PUBLIC_ACCESS_CONFIG" ]; then
+            echo "Importing S3 Bucket Public Access Block"
+            terraform import 'aws_s3_bucket_public_access_block.analytics_data' "$BUCKET_NAME" || \
+              echo "Failed to import S3 Bucket Public Access Block, continuing..."
+          fi
+          
+          # Import S3 Bucket Versioning if enabled
+          VERSIONING_STATUS=$(aws s3api get-bucket-versioning --bucket "$BUCKET_NAME" --query 'Status' --output text 2>/dev/null || echo "")
+          if [ -n "$VERSIONING_STATUS" ]; then
+            echo "Importing S3 Bucket Versioning"
+            terraform import 'aws_s3_bucket_versioning.analytics_data' "$BUCKET_NAME" || \
+              echo "Failed to import S3 Bucket Versioning, continuing..."
+          fi
+          
+          # Import S3 Bucket Server Side Encryption if configured
+          ENCRYPTION_STATUS=$(aws s3api get-bucket-encryption --bucket "$BUCKET_NAME" 2>/dev/null || echo "")
+          if [ -n "$ENCRYPTION_STATUS" ]; then
+            echo "Importing S3 Bucket Server Side Encryption"
+            terraform import 'aws_s3_bucket_server_side_encryption_configuration.analytics_data' "$BUCKET_NAME" || \
+              echo "Failed to import S3 Bucket Server Side Encryption, continuing..."
+          fi
+          
+          # Import S3 Bucket Lifecycle Configuration if it exists
+          LIFECYCLE_STATUS=$(aws s3api get-bucket-lifecycle-configuration --bucket "$BUCKET_NAME" 2>/dev/null || echo "")
+          if [ -n "$LIFECYCLE_STATUS" ]; then
+            echo "Importing S3 Bucket Lifecycle Configuration"
+            terraform import 'aws_s3_bucket_lifecycle_configuration.analytics_data' "$BUCKET_NAME" || \
+              echo "Failed to import S3 Bucket Lifecycle Configuration, continuing..."
+          fi
         else
           echo "S3 bucket $BUCKET_NAME not found, will be created"
         fi
     
-    - name: Import Service Discovery Namespace
+    # ============================================
+    # Service Discovery and Related Resources
+    # ============================================
+    - name: Import Service Discovery and Related Resources
       id: service-discovery-import
       continue-on-error: true
+      needs: [s3-import]
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         
@@ -318,21 +448,84 @@ jobs:
         
         # Get VPC ID if needed
         VPC_ID="${{ steps.vpc-import.outputs.vpc_id }}"
-        if [ -z "$VPC_ID" ]; then
-          VPC_ID=$(aws ec2 describe-vpcs \
-            --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" \
-            --query 'Vpcs[0].VpcId' \
-            --output text 2>/dev/null || echo "")
+        if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
+          echo "No VPC found, skipping Service Discovery imports"
+          exit 0
         fi
         
+        # Import Service Discovery Private DNS Namespace
         NAMESPACE_ID=$(aws servicediscovery list-namespaces \
-          --query "Namespaces[?Name=='${{ env.ECR_REPOSITORY }}.local' && Type=='DNS_PRIVATE'].Id" \
-          --output text 2>/dev/null | head -n1 || echo "")
+          --filters "Name=NAME,Values=${{ env.ECR_REPOSITORY }}.local" "Name=TYPE,Values=DNS_PRIVATE" \
+          --query 'Namespaces[0].Id' \
+          --output text 2>/dev/null || echo "")
         
         if [ -n "$NAMESPACE_ID" ] && [ "$NAMESPACE_ID" != "None" ]; then
           echo "Importing Service Discovery Namespace: $NAMESPACE_ID"
           terraform import aws_service_discovery_private_dns_namespace.private "$NAMESPACE_ID" || \
             echo "Failed to import Service Discovery namespace, continuing..."
+          
+          # Import Service Discovery Services
+          SERVICES=$(aws servicediscovery list-services \
+            --filters "Name=NAMESPACE_ID,Values=$NAMESPACE_ID" \
+            --query 'Services[*].[Id,Name]' \
+            --output text 2>/dev/null || echo "")
+            
+          if [ -n "$SERVICES" ]; then
+            echo "$SERVICES" | while read -r SERVICE_ID SERVICE_NAME; do
+              if [ -n "$SERVICE_ID" ] && [ "$SERVICE_ID" != "None" ]; then
+                # Map service name to Terraform resource name
+                case $SERVICE_NAME in
+                  *-service)
+                    TF_RESOURCE_NAME="${SERVICE_NAME%-service}"
+                    ;;
+                  *)
+                    TF_RESOURCE_NAME="$SERVICE_NAME"
+                    ;;
+                esac
+                
+                echo "Importing Service Discovery Service: $SERVICE_NAME ($SERVICE_ID)"
+                terraform import "aws_service_discovery_service.$TF_RESOURCE_NAME" "$SERVICE_ID" || \
+                  echo "Failed to import Service Discovery Service $SERVICE_NAME, continuing..."
+              fi
+            done
+          fi
+          
+          # Import Route 53 Private Hosted Zone if it exists
+          HOSTED_ZONE_ID=$(aws route53 list-hosted-zones-by-name \
+            --dns-name "${{ env.ECR_REPOSITORY }}.local" \
+            --query 'HostedZones[?Config.PrivateZone==`true`].Id' \
+            --output text 2>/dev/null | head -n1 || echo "")
+            
+          if [ -n "$HOSTED_ZONE_ID" ] && [ "$HOSTED_ZONE_ID" != "None" ]; then
+            echo "Importing Route 53 Private Hosted Zone: $HOSTED_ZONE_ID"
+            terraform import 'aws_route53_zone.private' "${HOSTED_ZONE_ID#/hostedzone/}" || \
+              echo "Failed to import Route 53 Private Hosted Zone, continuing..."
+              
+            # Import Route 53 Records if they exist
+            RECORDS=$(aws route53 list-resource-record-sets \
+              --hosted-zone-id "${HOSTED_ZONE_ID#/hostedzone/}" \
+              --query 'ResourceRecordSets[?Type==`A` || Type==`CNAME` || Type==`SRV`]' \
+              --output json 2>/dev/null || echo '[]')
+              
+            if [ "$RECORDS" != "[]" ]; then
+              echo "$RECORDS" | jq -c '.[]' | while read -r RECORD; do
+                RECORD_NAME=$(echo "$RECORD" | jq -r '.Name' | sed 's/\.$//')
+                RECORD_TYPE=$(echo "$RECORD" | jq -r '.Type')
+                
+                # Skip NS and SOA records as they are managed by AWS
+                if [ "$RECORD_TYPE" = "NS" ] || [ "$RECORD_TYPE" = "SOA" ]; then
+                  continue
+                fi
+                
+                # Create a unique identifier for the record
+                RECORD_IDENTIFIER="${RECORD_NAME}_${RECORD_TYPE}"
+                
+                echo "Importing Route 53 Record: $RECORD_NAME ($RECORD_TYPE)"
+                terraform import "aws_route53_record.${RECORD_IDENTIFIER}" "${HOSTED_ZONE_ID#/hostedzone/}_${RECORD_NAME}_${RECORD_TYPE}" || \
+                  echo "Failed to import Route 53 Record $RECORD_NAME, continuing..."
+              done
+            fi
+          fi
         else
           echo "Service Discovery namespace not found, will be created"
         fi
@@ -850,7 +1043,7 @@ jobs:
   build-and-push-ecr:
     name: Build and Push to ECR
     needs: [validate-terraform, import-resources]  # Depend on both validation and resource import
-    if: needs.import-resources.outputs.resources_imported == 'true' || needs.import-resources.result == 'skipped'
+    if: needs.import-resources.outputs.resources_imported == 'true' || needs.import-resources.outcome == 'skipped'
     runs-on: ubuntu-latest
     
     steps:
@@ -900,7 +1093,7 @@ jobs:
     name: Deploy Terraform (Creates ECR Repo & Infrastructure)
     needs: [test-terraform-plan, build-and-push-ecr]
     # Only run if import-resources was successful or skipped
-    if: needs.import-resources.result == 'success' || needs.import-resources.result == 'skipped'
+    if: needs.import-resources.outcome == 'success' || needs.import-resources.outcome == 'skipped'
     runs-on: ubuntu-latest
     
     steps:
