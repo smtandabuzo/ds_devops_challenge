@@ -649,12 +649,12 @@ jobs:
             echo "Importing S3 Bucket: $BUCKET_NAME"
             if ! terraform import "aws_s3_bucket.analytics_data" "$BUCKET_NAME" 2>/tmp/s3_import_error; then
               if grep -q "already managed by Terraform" /tmp/s3_import_error; then
-                echo "⚠️  S3 Bucket is already managed by Terraform"
-                echo "   Run 'terraform state list | grep $BUCKET_NAME' to find the existing resource"
-                echo "   You may need to update your configuration to reference the existing resource"
+                echo "ℹ️  S3 Bucket is already managed by Terraform"
+                echo "   To see the current state, run: terraform state list | grep aws_s3_bucket"
+                echo "   This is not an error - continuing with deployment..."
               else
                 cat /tmp/s3_import_error
-                echo "❌ Failed to import S3 Bucket"
+                echo "⚠️  Failed to import S3 Bucket, but continuing..."
               fi
               rm -f /tmp/s3_import_error
             else
