@@ -84,7 +84,7 @@ locals {
 # Find existing IGW if using existing VPC
 data "aws_internet_gateway" "existing" {
   count = var.use_existing_vpc && var.create_igw ? 1 : 0
-  
+
   filter {
     name   = "attachment.vpc-id"
     values = [local.vpc_id]
@@ -106,9 +106,9 @@ resource "aws_internet_gateway" "main" {
 # Use either existing or new IGW, or none if not needed
 locals {
   igw_id = var.use_existing_vpc ? (
-    var.create_igw && length(data.aws_internet_gateway.existing) > 0 ? 
+    var.create_igw && length(data.aws_internet_gateway.existing) > 0 ?
     data.aws_internet_gateway.existing[0].id : null
-  ) : (
+    ) : (
     length(aws_internet_gateway.main) > 0 ? aws_internet_gateway.main[0].id : null
   )
 }

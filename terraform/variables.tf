@@ -65,6 +65,12 @@ variable "vpc_cidr" {
   default     = "10.0.0.0/16"
 }
 
+variable "create_igw" {
+  description = "Whether to create an Internet Gateway for the VPC"
+  type        = bool
+  default     = true
+}
+
 variable "public_subnet_cidrs" {
   description = "List of public subnet CIDR blocks"
   type        = list(string)
