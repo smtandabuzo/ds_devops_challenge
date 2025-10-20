@@ -79,7 +79,7 @@ jobs:
     
     # Define volume for MinIO data
     volumes:
-      minio_data:
+      minio_data: {}
 
   validate-terraform:
     name: Validate Terraform
