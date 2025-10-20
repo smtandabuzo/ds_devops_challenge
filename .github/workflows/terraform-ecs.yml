@@ -45,11 +45,11 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
     - name: Initialize Terraform
       id: terraform-init
+      working-directory: ${{ env.TERRAFORM_WORKING_DIR }}
       run: |
         for i in {1..3}; do
           echo "Attempt $i: Initializing Terraform..."
-          cd ${{ env.TERRAFORM_WORKING_DIR }}
-          if terraform init -input=false && terraform fmt -check; then
+          if terraform init -input=false -reconfigure && terraform fmt -check; then
             echo "Terraform initialized successfully"
             exit 0
           fi
