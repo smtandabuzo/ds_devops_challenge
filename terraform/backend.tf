@@ -2,7 +2,7 @@ terraform {
   backend "s3" {
     bucket         = "ds-devops-terraform-state"
     key            = "terraform.tfstate"
-    region         = "us-east-1"
+    region         = ["us-east-1", "us-east-2"]
     encrypt        = true
   }
 }
