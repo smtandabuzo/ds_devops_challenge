@@ -26,27 +26,27 @@ env:
   CONTAINER_NAME: minio
   TERRAFORM_VERSION: 1.5.0
   TERRAFORM_WORKING_DIR: ./terraform
-
 jobs:
   setup-minio:
     runs-on: ubuntu-latest
     
     services:
-      # Add MinIO as a service container
       minio:
-        image: minio/minio:RELEASE.2023-03-24T21-41-23Z
+        image: minio/minio:RELEASE.2023-10-25T06-33-25Z
         env:
           MINIO_ROOT_USER: minioadmin
           MINIO_ROOT_PASSWORD: minioadmin
+          MINIO_SERVER_URL: http://localhost:9000
+          MINIO_BROWSER_REDIRECT_URL: http://localhost:9001
         ports:
-          - 9000:9000
-          - 9001:9001
+          - 9000:9000  # API
+          - 9001:9001  # Console
         options: >-
           --health-cmd "curl -f http://localhost:9000/minio/health/live"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-          --entrypoint /bin/sh -c "minio server /data --console-address :9001 --address :9000"
+          server /data --console-address :9001
 
     steps:
     - name: Print Start Time
