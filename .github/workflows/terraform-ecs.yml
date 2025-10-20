@@ -47,7 +47,7 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-          server /data --console-address :9001 --address :9000
+          -- /bin/sh -c 'minio server /data --console-address :9001 --address :9000'
 
     steps:
     - name: Install MinIO client
