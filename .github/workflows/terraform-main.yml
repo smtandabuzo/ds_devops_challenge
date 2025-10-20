@@ -1,0 +1,71 @@
+name: Terraform ECS Deployment
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+        - development
+        - staging
+        - production
+      deploy:
+        description: 'Deploy changes after validation'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: ds-devops-app
+  ECR_REGISTRY: 810772959397.dkr.ecr.us-east-1.amazonaws.com
+  CONTAINER_NAME: minio
+  TERRAFORM_VERSION: 1.5.0
+  TERRAFORM_WORKING_DIR: ./terraform
+  CLUSTER_NAME: ds-devops-cluster
+
+jobs:
+  validate-terraform:
+    name: Validate Terraform
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TERRAFORM_VERSION }}
+    
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Terraform Init
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        terraform init -input=false
+    
+    - name: Terraform Validate
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        terraform validate
+    
+    - name: Terraform Format
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        terraform fmt -check -recursive
+    
+    - name: Terraform Plan
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        terraform plan -input=false -no-color -var="environment=${{ github.event.inputs.environment || 'production' }}"
