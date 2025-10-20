@@ -1,4 +1,11 @@
 resource "aws_lb" "main" {
+  lifecycle {
+    ignore_changes = [
+      name,
+      tags,
+      security_groups
+    ]
+  }
   name               = "${var.app_name}-alb"
   internal           = false
   load_balancer_type = "application"

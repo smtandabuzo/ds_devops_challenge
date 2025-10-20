@@ -10,15 +10,30 @@ resource "aws_key_pair" "ec2_key_pair" {
   public_key = tls_private_key.ec2_key.public_key_openssh
 
   tags = {
-    Name = "ds-devops-ec2-key"
+    Name        = "ds-devops-ec2-key"
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+
+  lifecycle {
+    ignore_changes = [
+      key_name,
+      public_key
+    ]
   }
 }
 
 # Save the private key to a file
 resource "local_file" "private_key" {
-  content         = tls_private_key.ec2_key.private_key_openssh
+  content         = tls_private_key.ec2_key.private_key_pem
   filename        = "${path.module}/ds-devops-ec2-key.pem"
   file_permission = "0400"
+
+  lifecycle {
+    ignore_changes = [
+      content
+    ]
+  }
 }
 
 # Output the private key (for reference, handle with care)

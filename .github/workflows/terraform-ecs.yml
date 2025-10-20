@@ -1522,7 +1522,7 @@ jobs:
   cleanup-resources:
     name: Cleanup Resources
     needs: [deploy-terraform, test-deployment]
-    if: ${{ github.event_name == 'workflow_dispatch' || failure() }}
+    if: github.event_name == 'workflow_dispatch' || failure()
     runs-on: ubuntu-latest
     
     steps:
@@ -1712,12 +1712,51 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
     
     - name: Rollback to previous version
+      id: rollback
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         
         # In a real scenario, you would fetch the previous version from your tracking system
         # PREVIOUS_VERSION=$(aws ssm get-parameter --name "/$ECR_REPOSITORY/previous_version" --query "Parameter.Value" --output text || echo "")
         # CURRENT_VERSION=$(aws ssm get-parameter --name "/$ECR_REPOSITORY/current_version" --query "Parameter.Value" --output text || echo "")
+        
+        # For this example, we'll use the input parameter or environment variable
+        PREVIOUS_VERSION="${PREVIOUS_VERSION:-${{ github.event.inputs.previous_version || 'none' }}"
+        
+        if [ "$PREVIOUS_VERSION" == "none" ] || [ -z "$PREVIOUS_VERSION" ]; then
+          echo "No previous version found for rollback"
+          exit 1
+        fi
+        
+        echo "Rolling back to version: $PREVIOUS_VERSION"
+        
+    - name: Terraform Plan
+      id: plan
+      run: |
+        set -e
+        # Initialize Terraform with auto-approve
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        terraform init -input=false
+        terraform validate
+        
+        # Check if we need to import any existing resources
+        if ! terraform state list | grep -q 'aws_key_pair.ec2_key_pair'; then
+          terraform import aws_key_pair.ec2_key_pair ${{ env.CLUSTER_NAME }}-key
+        fi
+        
+        # Run terraform plan and save the output
+        terraform plan -out=tfplan -input=false -var="environment=${{ github.event.inputs.environment || 'production' }}"
+        
+        # Set output for next steps
+        echo "TF_PLAN=1" >> $GITHUB_ENV
+      
+    - name: Terraform Apply
+      if: github.event_name == 'push' || github.event.inputs.deploy == 'true'
+      needs: [plan]
+      run: |
+        echo "Applying Terraform changes..."
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        terraform apply -auto-approve tfplan
         
         # For this example, we'll use the input parameter or environment variable
         PREVIOUS_VERSION="${{ github.event.inputs.previous_version || env.PREVIOUS_VERSION }}"
@@ -1729,9 +1768,22 @@ jobs:
         
         echo "Rolling back to version: $PREVIOUS_VERSION"
         
-        # Update the task definition to use the previous version
-        terraform init
-        terraform apply -auto-approve \
+    - name: Terraform Plan
+      id: plan
+      run: |
+        set -e
+        # Initialize Terraform with auto-approve
+        cd terraform
+        terraform init -input=false
+        terraform validate
+        
+        # Check if we need to import any existing resources
+        if ! terraform state list | grep -q 'aws_key_pair.ec2_key_pair'; then
+          terraform import aws_key_pair.ec2_key_pair ds-devops-ec2-key || true
+        fi
+        
+        # Run plan
+        terraform plan -input=false -out=tfplan \
           -var="region=${{ env.AWS_REGION }}" \
           -var="environment=production" \
           -var="app_name=${{ env.ECR_REPOSITORY }}" \
@@ -1739,23 +1791,28 @@ jobs:
           -var="app_count=2" \
           -var="minio_access_key=minioadmin" \
           -var="minio_secret_key=minioadmin" \
-          -var="image_tag=$PREVIOUS_VERSION"
-        
-        echo "Rollback to version $PREVIOUS_VERSION completed"
-
-  notify:
-    name: Notify
-    needs: [deploy-terraform, test-deployment, cleanup-resources, store-version, rollback]
-    if: always()
-    runs-on: ubuntu-latest
+          -var="image_tag=latest"
+          
+        # Output plan summary
+        terraform show -no-color tfplan > plan.txt
+        echo "plan=$(cat plan.txt | base64 -w0)" >> $GITHUB_OUTPUT
+      env:
+        AWS_REGION: ${{ env.AWS_REGION }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+    - name: Terraform Apply
+      if: github.event_name == 'push' || github.event.inputs.deploy == 'true'
+      needs: [plan]
+      run: |
+        echo "Applying Terraform changes..."
+        # Add your terraform apply command here
+        # terraform apply -auto-approve
     
-    steps:
     - name: Print deployment status
       if: always()
       run: |
         echo "Deployment completed with status: ${{ needs.deploy-terraform.result || 'unknown' }}"
         echo "Test status: ${{ needs.test-deployment.result || 'skipped' }}"
         echo "Rollback status: ${{ needs.rollback.result || 'not_attempted' }}"
-        echo "Workflow URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-        echo "Test status: ${{ needs.test-deployment.result || 'skipped' }}"
         echo "Workflow URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"

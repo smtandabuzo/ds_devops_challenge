@@ -63,17 +63,20 @@ terraform plan -input=false -no-color \
     -var="environment=production" \
     -var="app_name=${ECR_REPOSITORY}" \
     -var="app_port=5000" \
-    -var="app_count=2" \
     -var="minio_access_key=minioadmin" \
     -var="minio_secret_key=minioadmin" \
     -var="image_tag=latest" \
     -out=plan.tfplan
 
-# Check if there are any changes needed
-if terraform show -no-color plan.tfplan 2>/dev/null | grep -q 'No changes.'; then
-    echo "No changes needed, infrastructure is up-to-date"
-    echo "changes_needed=false" >> $GITHUB_OUTPUT
-else
-    echo "Changes detected, please apply the plan"
-    echo "changes_needed=true" >> $GITHUB_OUTPUT
-fi
+    # Check if there are any changes needed
+    if terraform show -no-color plan.tfplan 2>/dev/null | grep -q 'No changes.'; then
+        echo "No changes needed, infrastructure is up-to-date"
+        if [ -n "$GITHUB_OUTPUT" ]; then
+            echo "changes_needed=false" >> $GITHUB_OUTPUT
+        fi
+    else
+        echo "Changes detected, please apply the plan"
+        if [ -n "$GITHUB_OUTPUT" ]; then
+            echo "changes_needed=true" >> $GITHUB_OUTPUT
+        fi
+    fi

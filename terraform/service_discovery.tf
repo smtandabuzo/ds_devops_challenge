@@ -1,4 +1,10 @@
 resource "aws_service_discovery_private_dns_namespace" "private" {
+  lifecycle {
+    ignore_changes = [
+      name,
+      vpc
+    ]
+  }
   name        = "${var.app_name}.local"
   description = "Service discovery namespace for ${var.app_name}"
   vpc         = local.vpc_id

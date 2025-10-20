@@ -3,6 +3,15 @@ resource "aws_s3_bucket" "analytics_data" {
   # Bucket naming with account ID to ensure uniqueness
   bucket = "${var.app_name}-analytics-data-${data.aws_caller_identity.current.account_id}"
 
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      bucket,
+      tags,
+      server_side_encryption_configuration
+    ]
+  }
+
   tags = {
     Name        = "${var.app_name}-analytics-data"
     Environment = var.environment
