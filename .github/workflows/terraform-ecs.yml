@@ -29,7 +29,6 @@ env:
 
 jobs:
   setup-minio:
-    name: Setup MinIO for Terraform State
     runs-on: ubuntu-latest
     
     services:
@@ -37,8 +36,8 @@ jobs:
       minio:
         image: minio/minio:RELEASE.2023-03-24T21-41-23Z
         env:
+          MINIO_ROOT_USER: minioadmin
           MINIO_ROOT_PASSWORD: minioadmin
-          MINIO_SERVER_URL: http://localhost:9000
         ports:
           - 9000:9000
           - 9001:9001
@@ -47,9 +46,14 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-          -- /bin/sh -c 'minio server /data --console-address :9001 --address :9000'
+          --entrypoint /bin/sh -c "minio server /data --console-address :9001 --address :9000"
 
     steps:
+    - name: Print Start Time
+      run: |
+        echo "Workflow started at: $(date)"
+        echo "Workflow run ID: $GITHUB_RUN_ID"
+        
     - name: Install MinIO client
       run: |
         wget https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc
