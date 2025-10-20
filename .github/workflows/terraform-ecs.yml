@@ -33,8 +33,8 @@ jobs:
     
     services:
       minio:
-        # Using public MinIO image - will be replaced by the ECR image in the steps
-        image: minio/minio:latest
+        # Using GitHub Container Registry (GHCR) as a more reliable source
+        image: ghcr.io/minio/minio:RELEASE.2023-10-25T06-33-25Z
         env:
           MINIO_ROOT_USER: minioadmin
           MINIO_ROOT_PASSWORD: minioadmin
