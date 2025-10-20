@@ -176,8 +176,9 @@ jobs:
     - name: Upload Terraform Plan
       uses: actions/upload-artifact@v4
       with:
-      with:
-        fetch-depth: 0  # Ensure full history for versioning
+        path: ${{ env.TERRAFORM_WORKING_DIR }}/plan.out
+        name: tfplan
+        retention-days: 1
       
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
@@ -1312,6 +1313,37 @@ jobs:
     needs: [test-terraform-plan, build-and-push-ecr]
     # Only run if import-resources was successful or skipped
     if: needs.import-resources.outcome == 'success' || needs.import-resources.outcome == 'skipped'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+    
+    - name: Download Terraform state
+      uses: actions/download-artifact@v3
+      with:
+        name: tf-state-${{ github.run_id }}
+        path: ${{ env.TERRAFORM_WORKING_DIR }}/.terraform
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TERRAFORM_VERSION }}
+        terraform_wrapper: false
+    
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Initialize Terraform
+      working-directory: ${{ env.TERRAFORM_WORKING_DIR }}
+      run: |
+        terraform init -input=false
     
     steps:
     - name: Checkout code
