@@ -2,7 +2,7 @@ terraform {
   backend "s3" {
     bucket         = "ds-devops-terraform-state"
     key            = "terraform.tfstate"
-    region         = "us-east-1"
+    region         = "us-east-2"
     dynamodb_table = "terraform-locks"
     encrypt        = true
   }
@@ -10,9 +10,7 @@ terraform {
 
 # Configure the MinIO provider
 provider "minio" {
-  minio_server   = "minio:9000"  # For GitHub Actions
-  minio_server   = "minio:9000"  # For Docker Compose
-  # minio_server = "localhost:9000"  # For local testing
+  minio_server = "minio:9000"
   minio_ssl      = false
   minio_insecure = true
   minio_user     = "minioadmin"
