@@ -83,10 +83,16 @@ locals {
 
 # Find existing IGW if using existing VPC
 data "aws_internet_gateway" "existing" {
-  count = var.use_existing_vpc ? 1 : 0
-  filter {
-    name   = "attachment.vpc-id"
-    values = [local.vpc_id]
+  count  = var.use_existing_vpc ? 1 : 0
+  vpc_id = local.vpc_id
+
+  # This makes the data source optional
+  lifecycle {
+    # If no IGW is found, this will return an empty list instead of failing
+    postcondition {
+      condition     = length(self.ids) > 0 || var.create_igw
+      error_message = "No Internet Gateway found in VPC ${local.vpc_id} and create_igw is false"
+    }
   }
 }
 

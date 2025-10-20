@@ -53,6 +53,12 @@ variable "use_existing_vpc" {
   default     = true
 }
 
+variable "create_igw" {
+  description = "Whether to create an Internet Gateway if one doesn't exist"
+  type        = bool
+  default     = true
+}
+
 variable "vpc_cidr" {
   description = "CIDR block for the VPC"
   type        = string
