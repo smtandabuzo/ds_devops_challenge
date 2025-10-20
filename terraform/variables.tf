@@ -130,6 +130,12 @@ variable "vpc_cidr" {
   default     = "10.0.0.0/16"
 }
 
+variable "tags" {
+  description = "A map of tags to apply to resources"
+  type        = map(string)
+  default     = {}
+}
+
 variable "public_subnet_cidrs" {
   description = "List of public subnet CIDR blocks"
   type        = list(string)
