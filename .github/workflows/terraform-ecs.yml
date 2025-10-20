@@ -7,6 +7,10 @@ on:
       - submission/sazimtandabuzo
     paths:
       - '**'  # Watch all files for changes
+  pull_request:
+    branches:
+      - main
+      - submission/sazimtandabuzo
   workflow_dispatch:
     inputs:
       cleanup:
@@ -1343,7 +1347,7 @@ jobs:
   build-and-push-ecr:
     name: Build and Push to ECR
     needs: [validate-terraform, test-terraform-plan]
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     
     steps:
@@ -1392,7 +1396,7 @@ jobs:
   deploy-terraform:
     name: Deploy Terraform (Creates ECR Repo & Infrastructure)
     needs: [test-terraform-plan, build-and-push-ecr]
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/submission/sazimtandabuzo')
     runs-on: ubuntu-latest
     
     steps:
@@ -1637,8 +1641,7 @@ jobs:
   test-deployment:
     name: Test Deployment
     needs: [deploy-terraform]
-    if: github.event_name != 'pull_request'
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/submission/sazimtandabuzo'
+    if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/submission/sazimtandabuzo')) || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     
     outputs:
@@ -1819,7 +1822,7 @@ jobs:
   store-version:
     name: Store Version
     needs: [deploy-terraform]
-    if: success() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: success() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/submission/sazimtandabuzo')
     runs-on: ubuntu-latest
     
     steps:
