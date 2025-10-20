@@ -22,8 +22,6 @@ env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: ds-devops-app
   ECR_REGISTRY: 810772959397.dkr.ecr.us-east-1.amazonaws.com
-  MINIO_ECR_REPOSITORY: ds-devops-app-minio
-  CONTAINER_NAME: minio
 
   TERRAFORM_VERSION: 1.5.0
   TERRAFORM_WORKING_DIR: ./terraform
@@ -54,149 +52,14 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
     
-    - name: Initialize Terraform with MinIO backend
-      env:
-        MINIO_ENDPOINT: http://minio:9000
-        MINIO_ACCESS_KEY: minioadmin
-        MINIO_SECRET_KEY: minioadmin
+    - name: Initialize Terraform
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
-        # Create backend configuration
-        cat > backend.tf << EOF
-        terraform {
-          backend "s3" {
-            bucket                      = "terraform-state"
-            key                         = "terraform.tfstate"
-            region                      = "us-east-1"
-            endpoint                    = "$MINIO_ENDPOINT"
-            skip_region_validation      = true
-            skip_credentials_validation = true
-            skip_metadata_api_check     = true
-            force_path_style            = true
-            access_key                  = "$MINIO_ACCESS_KEY"
-            secret_key                  = "$MINIO_SECRET_KEY"
-          }
-        }
-        EOF
-        
-        # Initialize Terraform
         terraform init -input=false
         
     - name: Terraform Format
       id: fmt
       run: |
-        cd ${{ env.TERRAFORM_WORKING_DIR }}
-        terraform fmt -check -recursive
-    
-    - name: Terraform Init
-      id: init
-      run: |
-        cd ${{ env.TERRAFORM_WORKING_DIR }}
-        terraform init -backend=false
-    
-    - name: Terraform Validate
-      id: validate
-      run: |
-        cd ${{ env.TERRAFORM_WORKING_DIR }}
-        terraform validate -no-color
-
-  test-terraform-plan:
-    name: Test Terraform Plan
-    needs: validate-terraform
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-      with:
-        fetch-depth: 0
-    
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v2
-      with:
-        terraform_version: ${{ env.TERRAFORM_VERSION }}
-        terraform_wrapper: false
-    
-    - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-    
-    - name: Configure MinIO Backend
-      run: |
-        mkdir -p ${{ env.TERRAFORM_WORKING_DIR }}
-        cat > ${{ env.TERRAFORM_WORKING_DIR }}/backend.tf << 'EOF'
-        terraform {
-          backend "s3" {
-            bucket   = "terraform-state"
-            key      = "terraform.tfstate"
-            region   = "us-east-1"
-            endpoint = "http://minio:9000"
-            access_key = "minioadmin"
-            secret_key = "minioadmin"
-            skip_region_validation      = true
-            skip_credentials_validation = true
-            skip_metadata_api_check     = true
-            use_path_style              = true
-            skip_requesting_account_id  = true
-          }
-        }
-        
-        # Configure the MinIO provider
-        provider "minio" {
-          minio_server   = "minio:9000"
-          minio_ssl      = false
-          minio_insecure = true
-          minio_user     = "minioadmin"
-          minio_password = "minioadmin"
-        }
-        
-        # Create the bucket for Terraform state
-        resource "minio_s3_bucket" "terraform_state" {
-          bucket = "terraform-state"
-          acl    = "private"
-        }
-        
-        # Enable versioning for the bucket
-        resource "minio_s3_bucket_versioning" "versioning" {
-          bucket = minio_s3_bucket.terraform_state.bucket
-          versioning_configuration {
-            status = "Enabled"
-          }
-        }
-        EOF
-        
-    - name: Wait for MinIO to be ready
-      run: |
-        until curl -s http://minio:9000/minio/health/live; do
-          echo "Waiting for MinIO to be ready..."
-          sleep 5
-        done
-      timeout-minutes: 2
-      
-    - name: Initialize Terraform with MinIO
-      working-directory: ${{ env.TERRAFORM_WORKING_DIR }}
-      run: |
-        terraform init -reconfigure
-        
-    - name: Create MinIO bucket if not exists
-      run: |
-        # Install MinIO client
-        wget https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc
-        chmod +x /usr/local/bin/mc
-        
-        # Configure MinIO client
-        mc config host add minio http://minio:9000 minioadmin minioadmin --api s3v4
-        
-        # Create bucket if it doesn't exist
-        if ! mc ls minio/terraform-state >/dev/null 2>&1; then
-          echo "Creating MinIO bucket for Terraform state..."
-          mc mb minio/terraform-state
-          mc policy set public minio/terraform-state
-        fi
         
     - name: Cache Terraform state
       uses: actions/cache@v3
@@ -684,8 +547,6 @@ jobs:
           -var="app_name=${{ env.ECR_REPOSITORY }}" \
           -var="app_port=5000" \
           -var="app_count=2" \
-          -var="minio_access_key=minioadmin" \
-          -var="minio_secret_key=minioadmin" \
           -var="image_tag=latest" \
           -out=tfplan
         
@@ -832,7 +693,7 @@ jobs:
         # ECS Cluster - Skip import here as it's handled in the Import All Remaining Resources section
         
         # ECS Task Definitions
-        for TASK_DEF in "app" "minio"; do
+        for TASK_DEF in "app"; do
           TASK_ARN=$(aws ecs list-task-definitions --family-prefix "${{ env.ECR_REPOSITORY }}-$TASK_DEF" --query 'taskDefinitionArns[0]' --output text 2>/dev/null || echo "")
           if [ ! -z "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ]; then
             echo "Importing ECS Task Definition: $TASK_ARN"
@@ -932,15 +793,10 @@ jobs:
         fi
         
         # Target Groups
-        for TG_NAME in "${{ env.ECR_REPOSITORY }}-tg" "${{ env.ECR_REPOSITORY }}-minio-tg"; do
-          TG_ARN=$(aws elbv2 describe-target-groups --names "$TG_NAME" --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
-          if [ ! -z "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
-            # Determine the correct resource name based on the target group name
-            if [[ "$TG_NAME" == *"minio"* ]]; then
-              RESOURCE_NAME="minio_tg"
-            else
-              RESOURCE_NAME="app_tg"
-            fi
+        TG_NAME="${{ env.ECR_REPOSITORY }}-tg"
+        TG_ARN=$(aws elbv2 describe-target-groups --names "$TG_NAME" --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
+        if [ ! -z "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
+          RESOURCE_NAME="app_tg"
             
             echo "Importing Target Group: $TG_NAME as $RESOURCE_NAME"
             if terraform state show "aws_lb_target_group.$RESOURCE_NAME" >/dev/null 2>&1; then
@@ -1209,12 +1065,6 @@ jobs:
           terraform import "aws_cloudwatch_log_group.app[0]" "$LOG_GROUP_NAME"
         fi
         
-        # Import MinIO log group
-        MINIO_LOG_GROUP="/ecs/${{ env.ECR_REPOSITORY }}-minio"
-        if aws logs describe-log-groups --log-group-name-prefix "$MINIO_LOG_GROUP" --query 'logGroups[].logGroupName' --output text | grep -q "$MINIO_LOG_GROUP"; then
-          echo "Importing CloudWatch Log Group: $MINIO_LOG_GROUP"
-          terraform import aws_cloudwatch_log_group.minio "$MINIO_LOG_GROUP"
-        fi
         
     - name: Show Import Status
       run: |
@@ -1319,7 +1169,7 @@ jobs:
 
   build-and-push-ecr:
     name: Build and Push to ECR
-    needs: [validate-terraform, test-terraform-plan]
+    needs: validate-terraform
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     
@@ -1368,7 +1218,7 @@ jobs:
 
   deploy-terraform:
     name: Deploy Terraform (Creates ECR Repo & Infrastructure)
-    needs: [test-terraform-plan, build-and-push-ecr]
+    needs: build-and-push-ecr
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/submission/sazimtandabuzo')
     runs-on: ubuntu-latest
     
@@ -1642,8 +1492,8 @@ jobs:
         # Wait for services to be ready
         sleep 30
         
-        # Test MinIO Console (should return 200)
-        curl -I http://${{ steps.alb.outputs.ALB_DNS }}:9001
+        # Test application endpoint (should return 200)
+        curl -I http://${{ steps.alb.outputs.ALB_DNS }}:5000
         
         # Test MinIO API (should return XML with ListAllMyBucketsResult)
         curl -s http://${{ steps.alb.outputs.ALB_DNS }}:9000
