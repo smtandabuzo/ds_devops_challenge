@@ -1,5 +1,4 @@
 name: Terraform ECS Deployment
-
 on:
   push:
     branches:
@@ -17,50 +16,41 @@ on:
         description: 'Clean up all resources (use with caution!'
         required: false
         default: 'false'
-
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: ds-devops-app
   ECR_REGISTRY: 810772959397.dkr.ecr.us-east-1.amazonaws.com
-
   TERRAFORM_VERSION: 1.5.0
   TERRAFORM_WORKING_DIR: ./terraform
 jobs:
-    
     # No need to define volumes at the job level in GitHub Actions
-
   validate-terraform:
     name: Validate Terraform
     runs-on: ubuntu-latest
-    
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
       with:
         fetch-depth: 0
-    
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: ${{ env.TERRAFORM_VERSION }}
         terraform_wrapper: false
-    
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v2
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
-    
     - name: Initialize Terraform
+      retry-on-error: true
+      retry-max-attempts: 3
+      id: terraform-init
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         terraform init -input=false
-        
-    - name: Terraform Format
-      id: fmt
-      run: |
-        
+        terraform fmt -check
     - name: Cache Terraform state
       uses: actions/cache@v3
       with:
@@ -68,7 +58,6 @@ jobs:
         key: terraform-state-${{ github.run_id }}
         restore-keys: |
           terraform-state-
-
     - name: Debug AWS Configuration
       env:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -79,10 +68,8 @@ jobs:
         echo "AWS_REGION: $AWS_REGION"
         aws sts get-caller-identity
         echo "Exit code: $?"
-
     - name: Make terraform-init.sh executable
       run: chmod +x ./bin/terraform-init.sh
-
     - name: Terraform Plan
       id: plan
       run: ./bin/terraform-init.sh
@@ -93,20 +80,17 @@ jobs:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
-
     - name: Upload Terraform Plan
       uses: actions/upload-artifact@v4
       with:
         path: ${{ env.TERRAFORM_WORKING_DIR }}/plan.out
         name: tfplan
         retention-days: 1
-      
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: ${{ env.TERRAFORM_VERSION }}
         terraform_wrapper: false
-        
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v2
       with:
@@ -115,32 +99,26 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
         role-duration-seconds: 3600
-        
     - name: Initialize Terraform
       id: init
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         terraform init -upgrade -input=false
-        
     - name: Check and Import VPC
       id: vpc-import
-      continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # Check if VPC is already in state
         if terraform state show 'aws_vpc.main[0]' >/dev/null 2>&1; then
           echo "VPC already exists in state"
           echo "vpc_id=$(terraform state show 'aws_vpc.main[0]' | grep '^id ' | awk '{print $3}' | tr -d '\"\n')" >> $GITHUB_OUTPUT
           exit 0
         fi
-        
         # Find VPC by tags
         VPC_ID=$(aws ec2 describe-vpcs \
           --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" \
           --query 'Vpcs[0].VpcId' \
           --output text 2>/dev/null || echo "")
-        
         if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
           echo "Importing VPC: $VPC_ID"
           terraform import 'aws_vpc.main[0]' "$VPC_ID"
@@ -149,13 +127,10 @@ jobs:
           echo "No existing VPC found to import"
           echo "vpc_id=" >> $GITHUB_OUTPUT
         fi
-    
     - name: Import Subnets
       id: subnets-import
-      continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # Get VPC ID from previous step or find it
         VPC_ID="${{ steps.vpc-import.outputs.vpc_id }}"
         if [ -z "$VPC_ID" ]; then
@@ -164,19 +139,16 @@ jobs:
             --query 'Vpcs[0].VpcId' \
             --output text 2>/dev/null || echo "")
         fi
-        
         if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
           echo "No VPC found, skipping subnet imports"
           exit 0
         fi
-        
         # Import public subnets
         for AZ in a b; do
           SUBNET_ID=$(aws ec2 describe-subnets \
             --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-public-$AZ" "Name=vpc-id,Values=$VPC_ID" \
             --query 'Subnets[0].SubnetId' \
             --output text 2>/dev/null || echo "")
-            
           if [ -n "$SUBNET_ID" ] && [ "$SUBNET_ID" != "None" ]; then
             INDEX=$([ "$AZ" = "a" ] && echo 0 || echo 1)
             echo "Importing subnet $SUBNET_ID at index $INDEX"
@@ -184,24 +156,20 @@ jobs:
               echo "Failed to import subnet $SUBNET_ID, continuing..."
           fi
         done
-    
     # ============================================
     # Security Groups and Network ACLs
     # ============================================
     - name: Import Security Groups and Network ACLs
       id: security-import
-      continue-on-error: true
       if: steps.vpc-import.outcome == 'success' && steps.subnets-import.outcome == 'success'
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # Get VPC ID
         VPC_ID="${{ steps.vpc-import.outputs.vpc_id }}"
         if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
           echo "No VPC found, skipping security group imports"
           exit 0
         fi
-        
         # Define security groups to import with their expected names
         declare -A SGS=(
           ["alb"]="${{ env.ECR_REPOSITORY }}-alb-sg"
@@ -211,29 +179,23 @@ jobs:
           ["redis"]="${{ env.ECR_REPOSITORY }}-redis-sg"
           ["elasticache"]="${{ env.ECR_REPOSITORY }}-elasticache-sg"
         )
-        
         # Import all security groups
         for SG_VAR in "${!SGS[@]}"; do
           SG_NAME="${SGS[$SG_VAR]}"
-          
           # Check if already imported
           if terraform state show "aws_security_group.$SG_VAR" >/dev/null 2>&1; then
             echo "Security group $SG_VAR already imported, skipping"
             continue
           fi
-          
           # Check if security group exists in AWS
           SG_INFO=$(aws ec2 describe-security-groups \
             --filters "Name=group-name,Values=$SG_NAME" "Name=vpc-id,Values=$VPC_ID" \
             --query 'SecurityGroups[0].[GroupId,GroupName]' \
             --output text 2>/dev/null || echo "")
-            
           if [ -n "$SG_INFO" ] && [ "$SG_INFO" != "None" ]; then
             SG_ID=$(echo "$SG_INFO" | awk '{print $1}')
-            
             # Check if already in state with a different resource name
             CURRENT_SG=$(terraform state list | grep "^aws_security_group\." | xargs -I{} terraform state show {} | grep -E '^id\s+=' | grep "$SG_ID" || true)
-            
             if [ -n "$CURRENT_SG" ]; then
               echo "⚠️ Security group $SG_NAME ($SG_ID) is already managed by Terraform with a different resource name"
               echo "   $CURRENT_SG"
@@ -258,13 +220,11 @@ jobs:
             echo "ℹ️ Security group $SG_NAME not found, it will be created"
           fi
         done
-        
         # Import Network ACLs
         NACLS=$(aws ec2 describe-network-acls \
           --filters "Name=vpc-id,Values=$VPC_ID" \
           --query 'NetworkAcls[*].[NetworkAclId,Tags[?Key==`Name`].Value|[0]]' \
           --output text 2>/dev/null || echo "")
-          
         if [ -n "$NACLS" ]; then
           echo "$NACLS" | while read -r NACL_ID NACL_NAME; do
             if [[ "$NACL_NAME" == *"public"* ]]; then
@@ -282,13 +242,11 @@ jobs:
             fi
           done
         fi
-        
         # Import VPC Endpoints if they exist
         VPC_ENDPOINTS=$(aws ec2 describe-vpc-endpoints \
           --filters "Name=vpc-id,Values=$VPC_ID" \
           --query 'VpcEndpoints[*].[VpcEndpointId,ServiceName]' \
           --output text 2>/dev/null || echo "")
-          
         if [ -n "$VPC_ENDPOINTS" ]; then
           echo "$VPC_ENDPOINTS" | while read -r ENDPOINT_ID SERVICE_NAME; do
             if [[ "$SERVICE_NAME" == *"s3"* ]]; then
@@ -312,36 +270,30 @@ jobs:
             fi
           done
         fi
-    
     # ============================================
     # ECR Repository
     # ============================================
     - name: Import ECR Repository and Related Resources
       id: ecr-import
-      continue-on-error: true
       if: steps.security-import.outcome == 'success' || steps.security-import.outcome == 'skipped'
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # Check if already imported
         if terraform state show 'aws_ecr_repository.app' >/dev/null 2>&1; then
           echo "ECR repository already imported"
           exit 0
         fi
-        
         # Import ECR Repository
         if aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} >/dev/null 2>&1; then
           echo "Importing ECR repository: ${{ env.ECR_REPOSITORY }}"
           terraform import aws_ecr_repository.app ${{ env.ECR_REPOSITORY }} || \
             echo "Failed to import ECR repository, continuing..."
-          
           # Import ECR Lifecycle Policy if it exists
           if aws ecr get-lifecycle-policy --repository-name ${{ env.ECR_REPOSITORY }} >/dev/null 2>&1; then
             echo "Importing ECR Lifecycle Policy"
             terraform import 'aws_ecr_lifecycle_policy.app' "${{ env.ECR_REPOSITORY }}" || \
               echo "Failed to import ECR Lifecycle Policy, continuing..."
           fi
-          
           # Import ECR Repository Policy if it exists
           if aws ecr get-repository-policy --repository-name ${{ env.ECR_REPOSITORY }} >/dev/null 2>&1; then
             echo "Importing ECR Repository Policy"
@@ -351,45 +303,37 @@ jobs:
         else
           echo "ECR repository ${{ env.ECR_REPOSITORY }} not found, will be created"
         fi
-        
         # Import ECR Pull Through Cache Rule if it exists
         if aws ecr describe-pull-through-cache-rules --repository-name-prefix ${{ env.ECR_REPOSITORY }} --query 'pullThroughCacheRules[0].ecrRepositoryPrefix' --output text 2>/dev/null | grep -q ${{ env.ECR_REPOSITORY }}; then
           echo "Importing ECR Pull Through Cache Rule"
           terraform import 'aws_ecr_pull_through_cache_rule.app' "${{ env.ECR_REPOSITORY }}" || \
             echo "Failed to import ECR Pull Through Cache Rule, continuing..."
         fi
-    
     # ============================================
     # S3 Bucket and Related Resources
     # ============================================
     - name: Import S3 Bucket and Related Resources
       id: s3-import
-      continue-on-error: true
       if: steps.ecr-import.outcome == 'success' || steps.ecr-import.outcome == 'skipped'
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # Check if already imported
         if terraform state show 'aws_s3_bucket.analytics_data' >/dev/null 2>&1; then
           echo "S3 bucket already imported"
           exit 0
         fi
-        
         ACCOUNT_ID="${{ steps.account-id.outputs.account_id }}"
         BUCKET_NAME="${{ env.ECR_REPOSITORY }}-analytics-data-$ACCOUNT_ID"
-        
         if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
           echo "Importing S3 bucket: $BUCKET_NAME"
           terraform import aws_s3_bucket.analytics_data "$BUCKET_NAME" || \
             echo "Failed to import S3 bucket, continuing..."
-          
           # Import S3 Bucket Policy if it exists
           if aws s3api get-bucket-policy --bucket "$BUCKET_NAME" >/dev/null 2>&1; then
             echo "Importing S3 Bucket Policy"
             terraform import 'aws_s3_bucket_policy.analytics_data' "$BUCKET_NAME" || \
               echo "Failed to import S3 Bucket Policy, continuing..."
           fi
-          
           # Import S3 Bucket Public Access Block if it exists
           PUBLIC_ACCESS_CONFIG=$(aws s3api get-public-access-block --bucket "$BUCKET_NAME" 2>/dev/null || echo "")
           if [ -n "$PUBLIC_ACCESS_CONFIG" ]; then
@@ -397,7 +341,6 @@ jobs:
             terraform import 'aws_s3_bucket_public_access_block.analytics_data' "$BUCKET_NAME" || \
               echo "Failed to import S3 Bucket Public Access Block, continuing..."
           fi
-          
           # Import S3 Bucket Versioning if enabled
           VERSIONING_STATUS=$(aws s3api get-bucket-versioning --bucket "$BUCKET_NAME" --query 'Status' --output text 2>/dev/null || echo "")
           if [ -n "$VERSIONING_STATUS" ]; then
@@ -405,7 +348,6 @@ jobs:
             terraform import 'aws_s3_bucket_versioning.analytics_data' "$BUCKET_NAME" || \
               echo "Failed to import S3 Bucket Versioning, continuing..."
           fi
-          
           # Import S3 Bucket Server Side Encryption if configured
           ENCRYPTION_STATUS=$(aws s3api get-bucket-encryption --bucket "$BUCKET_NAME" 2>/dev/null || echo "")
           if [ -n "$ENCRYPTION_STATUS" ]; then
@@ -413,7 +355,6 @@ jobs:
             terraform import 'aws_s3_bucket_server_side_encryption_configuration.analytics_data' "$BUCKET_NAME" || \
               echo "Failed to import S3 Bucket Server Side Encryption, continuing..."
           fi
-          
           # Import S3 Bucket Lifecycle Configuration if it exists
           LIFECYCLE_STATUS=$(aws s3api get-bucket-lifecycle-configuration --bucket "$BUCKET_NAME" 2>/dev/null || echo "")
           if [ -n "$LIFECYCLE_STATUS" ]; then
@@ -424,48 +365,40 @@ jobs:
         else
           echo "S3 bucket $BUCKET_NAME not found, will be created"
         fi
-    
     # ============================================
     # Service Discovery and Related Resources
     # ============================================
     - name: Import Service Discovery and Related Resources
       id: service-discovery-import
-      continue-on-error: true
       if: steps.s3-import.outcome == 'success' || steps.s3-import.outcome == 'skipped'
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # Check if already imported
         if terraform state show 'aws_service_discovery_private_dns_namespace.private' >/dev/null 2>&1; then
           echo "Service Discovery namespace already imported"
           exit 0
         fi
-        
         # Get VPC ID if needed
         VPC_ID="${{ steps.vpc-import.outputs.vpc_id }}"
         if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
           echo "No VPC found, skipping Service Discovery imports"
           exit 0
         fi
-        
         # Import Service Discovery Private DNS Namespace
         NAMESPACE_ID=$(aws servicediscovery list-namespaces \
           --filters "Name=NAME,Values=${{ env.ECR_REPOSITORY }}.local" "Name=TYPE,Values=DNS_PRIVATE" \
           --query 'Namespaces[0].Id' \
           --output text 2>/dev/null || echo "")
-        
         if [ -n "$NAMESPACE_ID" ] && [ "$NAMESPACE_ID" != "None" ] && [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
           echo "Importing Service Discovery Namespace: $NAMESPACE_ID with VPC: $VPC_ID"
           # Format: NAMESPACE_ID:VPC_ID
           terraform import aws_service_discovery_private_dns_namespace.private "${NAMESPACE_ID}:${VPC_ID}" || \
             echo "Failed to import Service Discovery namespace, continuing..."
-          
           # Import Service Discovery Services
           SERVICES=$(aws servicediscovery list-services \
             --filters "Name=NAMESPACE_ID,Values=$NAMESPACE_ID" \
             --query 'Services[*].[Id,Name]' \
             --output text 2>/dev/null || echo "")
-            
           if [ -n "$SERVICES" ]; then
             echo "$SERVICES" | while read -r SERVICE_ID SERVICE_NAME; do
               if [ -n "$SERVICE_ID" ] && [ "$SERVICE_ID" != "None" ]; then
@@ -478,44 +411,36 @@ jobs:
                     TF_RESOURCE_NAME="$SERVICE_NAME"
                     ;;
                 esac
-                
                 echo "Importing Service Discovery Service: $SERVICE_NAME ($SERVICE_ID)"
                 terraform import "aws_service_discovery_service.$TF_RESOURCE_NAME" "$SERVICE_ID" || \
                   echo "Failed to import Service Discovery Service $SERVICE_NAME, continuing..."
               fi
             done
           fi
-          
           # Import Route 53 Private Hosted Zone if it exists
           HOSTED_ZONE_ID=$(aws route53 list-hosted-zones-by-name \
             --dns-name "${{ env.ECR_REPOSITORY }}.local" \
             --query 'HostedZones[?Config.PrivateZone==`true`].Id' \
             --output text 2>/dev/null | head -n1 || echo "")
-            
           if [ -n "$HOSTED_ZONE_ID" ] && [ "$HOSTED_ZONE_ID" != "None" ]; then
             echo "Importing Route 53 Private Hosted Zone: $HOSTED_ZONE_ID"
             terraform import 'aws_route53_zone.private' "${HOSTED_ZONE_ID#/hostedzone/}" || \
               echo "Failed to import Route 53 Private Hosted Zone, continuing..."
-              
             # Import Route 53 Records if they exist
             RECORDS=$(aws route53 list-resource-record-sets \
               --hosted-zone-id "${HOSTED_ZONE_ID#/hostedzone/}" \
               --query 'ResourceRecordSets[?Type==`A` || Type==`CNAME` || Type==`SRV`]' \
               --output json 2>/dev/null || echo '[]')
-              
             if [ "$RECORDS" != "[]" ]; then
               echo "$RECORDS" | jq -c '.[]' | while read -r RECORD; do
                 RECORD_NAME=$(echo "$RECORD" | jq -r '.Name' | sed 's/\.$//')
                 RECORD_TYPE=$(echo "$RECORD" | jq -r '.Type')
-                
                 # Skip NS and SOA records as they are managed by AWS
                 if [ "$RECORD_TYPE" = "NS" ] || [ "$RECORD_TYPE" = "SOA" ]; then
                   continue
                 fi
-                
                 # Create a unique identifier for the record
                 RECORD_IDENTIFIER="${RECORD_NAME}_${RECORD_TYPE}"
-                
                 echo "Importing Route 53 Record: $RECORD_NAME ($RECORD_TYPE)"
                 terraform import "aws_route53_record.${RECORD_IDENTIFIER}" "${HOSTED_ZONE_ID#/hostedzone/}_${RECORD_NAME}_${RECORD_TYPE}" || \
                   echo "Failed to import Route 53 Record $RECORD_NAME, continuing..."
@@ -525,20 +450,16 @@ jobs:
         else
           echo "Service Discovery namespace not found, will be created"
         fi
-    
     - name: Verify and Plan
       id: verify
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # Initialize Terraform
         echo "=== Initializing Terraform ==="
         terraform init -input=false
-
         # Show current state
         echo "=== Current Terraform State ==="
         terraform state list || echo "No state file found, this is normal for the first run"
-        
         # Run plan to verify configuration
         echo -e "\n=== Running Terraform Plan ==="
         terraform plan -input=false -no-color \
@@ -549,7 +470,6 @@ jobs:
           -var="app_count=2" \
           -var="image_tag=latest" \
           -out=tfplan
-        
         # Check if there are any changes needed
         if terraform show -no-color tfplan | grep -q 'No changes.'; then
           echo "No changes needed, infrastructure is up-to-date"
@@ -558,21 +478,16 @@ jobs:
           echo "Changes detected, please apply the plan"
           echo "changes_needed=true" >> $GITHUB_OUTPUT
         fi
-    
     - name: Set Import Status
       id: set-import-status
       run: |
         # This step just sets the output for the job
         echo "resources_imported=true" >> $GITHUB_OUTPUT
-        
     - name: Import Load Balancer if it exists
-      continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         # Skip ALB import here as it's handled in the Import All Remaining Resources section
-        
     - name: Import VPC if it exists
-      continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
@@ -580,39 +495,31 @@ jobs:
           echo "Importing existing VPC"
           terraform import aws_vpc.main "$VPC_ID"
         fi
-        
     - name: Import S3 Bucket if it exists
-      continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         BUCKET_NAME="${{ env.ECR_REPOSITORY }}-analytics-data-$(aws sts get-caller-identity --query Account --output text)"
         if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
           echo "Importing existing S3 Bucket"
           terraform import aws_s3_bucket.analytics_data "$BUCKET_NAME"
-          
           # Import S3 bucket policy if it exists
           if aws s3api get-bucket-policy --bucket "$BUCKET_NAME" > /dev/null 2>&1; then
             echo "Importing S3 Bucket Policy"
             terraform import aws_s3_bucket_policy.analytics_data "$BUCKET_NAME"
           fi
         fi
-        
     - name: Import Security Groups if they exist
-      continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # Get VPC ID if not already set
         if [ -z "$VPC_ID" ]; then
           VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
         fi
-        
         if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
           # Import ALB Security Group
           ALB_SG_ID=$(aws ec2 describe-security-groups \
             --filters "Name=group-name,Values=${{ env.ECR_REPOSITORY }}-alb-sg" "Name=vpc-id,Values=$VPC_ID" \
             --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
-            
           if [ ! -z "$ALB_SG_ID" ] && [ "$ALB_SG_ID" != "None" ]; then
             echo "Importing ALB Security Group"
             if ! terraform state show "aws_security_group.alb" > /dev/null 2>&1; then
@@ -622,12 +529,10 @@ jobs:
               echo "ALB Security Group already exists in state"
             fi
           fi
-          
           # Import ECS Instances Security Group
           ECS_SG_ID=$(aws ec2 describe-security-groups \
             --filters "Name=group-name,Values=${{ env.ECR_REPOSITORY }}-ecs-instances-sg" "Name=vpc-id,Values=$VPC_ID" \
             --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
-            
           if [ ! -z "$ECS_SG_ID" ] && [ "$ECS_SG_ID" != "None" ]; then
             echo "Importing ECS Instances Security Group"
             if ! terraform state show "aws_security_group.ecs_instances" > /dev/null 2>&1; then
@@ -637,12 +542,10 @@ jobs:
               echo "ECS Instances Security Group already exists in state"
             fi
           fi
-          
           # Import ECS Service Security Group if it exists
           ECS_SERVICE_SG_ID=$(aws ec2 describe-security-groups \
             --filters "Name=group-name,Values=${{ env.ECR_REPOSITORY }}-ecs-service-sg" "Name=vpc-id,Values=$VPC_ID" \
             --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
-            
           if [ ! -z "$ECS_SERVICE_SG_ID" ] && [ "$ECS_SERVICE_SG_ID" != "None" ]; then
             echo "Importing ECS Service Security Group"
             if ! terraform state show "aws_security_group.ecs_service" > /dev/null 2>&1; then
@@ -653,20 +556,15 @@ jobs:
             fi
           fi
         fi
-        
     - name: Import All Remaining Resources
-      continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # 1. IAM Resources
         echo "=== Importing IAM Resources ==="
-        
         # IAM Policy for S3 Access
         POLICY_NAME="${{ env.ECR_REPOSITORY }}-analytics-bucket-access"
         ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
         POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
-        
         if aws iam get-policy --policy-arn "$POLICY_ARN" > /dev/null 2>&1; then
           echo "Importing IAM Policy: $POLICY_ARN"
           terraform import "aws_iam_policy.analytics_bucket_access" "$POLICY_ARN" || \
@@ -674,7 +572,6 @@ jobs:
         else
           echo "IAM Policy $POLICY_NAME not found, it will be created"
         fi
-        
         # IAM Roles
         for ROLE_NAME in \
           "${{ env.ECR_REPOSITORY }}-ecs-task-execution-role" \
@@ -686,12 +583,9 @@ jobs:
               echo "Failed to import IAM Role $ROLE_NAME, continuing..."
           fi
         done
-        
         # 2. ECS Resources
         echo "\n=== Importing ECS Resources ==="
-        
         # ECS Cluster - Skip import here as it's handled in the Import All Remaining Resources section
-        
         # ECS Task Definitions
         for TASK_DEF in "app"; do
           TASK_ARN=$(aws ecs list-task-definitions --family-prefix "${{ env.ECR_REPOSITORY }}-$TASK_DEF" --query 'taskDefinitionArns[0]' --output text 2>/dev/null || echo "")
@@ -701,10 +595,8 @@ jobs:
               echo "Failed to import ECS Task Definition $TASK_DEF, continuing..."
           fi
         done
-        
         # 3. EC2 & Auto Scaling
         echo "\n=== Importing EC2 & Auto Scaling Resources ==="
-        
         # Launch Template
         LAUNCH_TEMPLATE_NAME=$(aws ec2 describe-launch-templates \
           --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-launch-template-*" \
@@ -714,7 +606,6 @@ jobs:
           terraform import "aws_launch_template.ecs_launch_template[0]" "$LAUNCH_TEMPLATE_NAME" || \
             echo "Launch Template import failed or already exists, continuing..."
         fi
-        
         # Auto Scaling Group
         ASG_NAME=$(aws autoscaling describe-auto-scaling-groups \
           --query "AutoScalingGroups[?contains(Tags[?Key=='Name'].Value, '${{ env.ECR_REPOSITORY }}-asg')].AutoScalingGroupName" \
@@ -724,7 +615,6 @@ jobs:
           terraform import "aws_autoscaling_group.ecs_asg[0]" "$ASG_NAME" || \
             echo "Auto Scaling Group import failed or already exists, continuing..."
         fi
-        
         # 4. S3 Resources
         echo "\n=== Importing S3 Resources ==="
         BUCKET_NAME="${{ env.ECR_REPOSITORY }}-analytics-data-$(aws sts get-caller-identity --query Account --output text)"
@@ -744,12 +634,10 @@ jobs:
               rm -f /tmp/s3_import_error
             else
               echo "✅ Successfully imported S3 Bucket"
-              
               # Only try to import versioning if the bucket import was successful
               echo "Importing S3 Bucket Versioning..."
               terraform import "aws_s3_bucket_versioning.analytics_data_versioning[0]" "$BUCKET_NAME" 2>/dev/null || \
                 echo "S3 Bucket Versioning import failed or already exists, continuing..."
-                
               echo "Importing S3 Bucket Encryption..."
               terraform import "aws_s3_bucket_server_side_encryption_configuration.analytics_data_encryption[0]" "$BUCKET_NAME" 2>/dev/null || \
                 echo "S3 Bucket Encryption import failed or already exists, continuing..."
@@ -760,10 +648,8 @@ jobs:
         else
           echo "ℹ️  S3 Bucket $BUCKET_NAME not found, it will be created"
         fi
-        
         # 5. Load Balancer Resources
         echo "\n=== Importing Load Balancer Resources ==="
-        
         # ALB
         ALB_ARN=$(aws elbv2 describe-load-balancers --names "${{ env.ECR_REPOSITORY }}-alb" --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
         if [ ! -z "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
@@ -782,7 +668,6 @@ jobs:
           else
             echo "✅ ALB is already in state"
           fi
-          
           # ALB Listeners
           LISTENER_ARN=$(aws elbv2 describe-listeners --load-balancer-arn "$ALB_ARN" --query 'Listeners[0].ListenerArn' --output text 2>/dev/null || echo "")
           if [ ! -z "$LISTENER_ARN" ] && [ "$LISTENER_ARN" != "None" ]; then
@@ -791,13 +676,11 @@ jobs:
               echo "ALB Listener import failed or already exists, continuing..."
           fi
         fi
-        
         # Target Groups
         TG_NAME="${{ env.ECR_REPOSITORY }}-tg"
         TG_ARN=$(aws elbv2 describe-target-groups --names "$TG_NAME" --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
         if [ ! -z "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
           RESOURCE_NAME="app_tg"
-            
             echo "Importing Target Group: $TG_NAME as $RESOURCE_NAME"
             if terraform state show "aws_lb_target_group.$RESOURCE_NAME" >/dev/null 2>&1; then
               echo "✅ Target Group $TG_NAME is already in state as $RESOURCE_NAME"
@@ -815,28 +698,22 @@ jobs:
             fi
           fi
         done
-        
         # 6. Service Discovery
         echo "\n=== Importing Service Discovery Resources ==="
-        
         # First, check if the resource is already in the state
         if terraform state show 'aws_service_discovery_private_dns_namespace.private' >/dev/null 2>&1; then
           echo "✅ Service Discovery Namespace is already in state"
           NAMESPACE_ID=$(terraform state show 'aws_service_discovery_private_dns_namespace.private' | grep 'id ' | awk '{print $3}' | tr -d '"')
         else
           echo "Looking up existing Service Discovery namespace..."
-          
           # Get the namespace ID using AWS CLI
           NAMESPACE_ID=$(aws servicediscovery list-namespaces \
             --query "Namespaces[?Name=='${{ env.ECR_REPOSITORY }}.local' && Type=='DNS_PRIVATE'].Id" \
             --output text 2>/dev/null | head -1 | cut -d'/' -f2 || echo "")
-            
           if [ -n "$NAMESPACE_ID" ] && [ "$NAMESPACE_ID" != "None" ]; then
             echo "Found existing Service Discovery Namespace: $NAMESPACE_ID"
-            
             # Try importing with just the namespace ID (most reliable method)
             echo "Attempting to import with namespace ID: $NAMESPACE_ID"
-            
             if terraform import "aws_service_discovery_private_dns_namespace.private" "$NAMESPACE_ID" 2>/tmp/ns_import_error; then
               echo "✅ Successfully imported Service Discovery Namespace"
             else
@@ -861,17 +738,14 @@ jobs:
             echo "ℹ️  No existing Service Discovery Namespace found"
           fi
         fi
-        
         # If we have a namespace ID, try to import the services
         if [ -n "$NAMESPACE_ID" ] && [ "$NAMESPACE_ID" != "None" ]; then
           echo "\n=== Importing Service Discovery Services ==="
-          
           for SERVICE_NAME in "app" "minio"; do
             echo "Checking for $SERVICE_NAME service..."
             SERVICE_ARN=$(aws servicediscovery list-services \
               --filters "Name=NAME,Values=$SERVICE_NAME" "Name=NAMESPACE_ID,Values=$NAMESPACE_ID" \
               --query 'Services[0].Arn' --output text 2>/dev/null || echo "")
-              
             if [ -n "$SERVICE_ARN" ] && [ "$SERVICE_ARN" != "None" ]; then
               echo "Importing service: $SERVICE_NAME"
               terraform import "aws_service_discovery_service.$SERVICE_NAME" "$NAMESPACE_ID/$SERVICE_NAME" || \
@@ -881,7 +755,6 @@ jobs:
             fi
           done
         fi
-        
         # Import Services if we have a valid NAMESPACE_ID
         if [ ! -z "$NAMESPACE_ID" ] && [ "$NAMESPACE_ID" != "None" ]; then
           for SERVICE_NAME in "app" "minio"; do
@@ -894,7 +767,6 @@ jobs:
             fi
           done
         fi
-        
         # 7. CloudWatch Logs
         echo "\n=== Importing CloudWatch Log Groups ==="
         for LOG_GROUP in "/ecs/${{ env.ECR_REPOSITORY }}" "/ecs/${{ env.ECR_REPOSITORY }}-minio"; do
@@ -904,12 +776,9 @@ jobs:
               echo "CloudWatch Log Group $LOG_GROUP import failed or already exists, continuing..."
           fi
         done
-
     - name: Import IAM Roles and Policies if they exist
-      continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # Import ECS Task Execution Role
         TASK_EXEC_ROLE_NAME="${{ env.ECR_REPOSITORY }}-ecs-task-execution-role"
         if aws iam get-role --role-name $TASK_EXEC_ROLE_NAME > /dev/null 2>&1; then
@@ -920,7 +789,6 @@ jobs:
           else
             echo "Task Execution Role already exists in state"
           fi
-          
           # Import policy attachment if not already in state
           if ! terraform state show "aws_iam_role_policy_attachment.ecs_task_execution_role_policy[0]" > /dev/null 2>&1; then
             terraform import "aws_iam_role_policy_attachment.ecs_task_execution_role_policy[0]" \
@@ -928,7 +796,6 @@ jobs:
               echo "Policy attachment already exists in state or import failed, continuing..."
           fi
         fi
-        
         # Import ECS Task Role
         TASK_ROLE_NAME="${{ env.ECR_REPOSITORY }}-ecs-task-role"
         if aws iam get-role --role-name $TASK_ROLE_NAME > /dev/null 2>&1; then
@@ -940,7 +807,6 @@ jobs:
             echo "Task Role already exists in state"
           fi
         fi
-        
         # Import ECS Instance Role if it exists
         INSTANCE_ROLE_NAME="${{ env.ECR_REPOSITORY }}-ecs-instance-role"
         if aws iam get-role --role-name $INSTANCE_ROLE_NAME > /dev/null 2>&1; then
@@ -951,7 +817,6 @@ jobs:
           else
             echo "Instance Role already exists in state"
           fi
-          
           # Import policy attachment if not already in state
           if ! terraform state show "aws_iam_role_policy_attachment.ecs_instance_role[0]" > /dev/null 2>&1; then
             terraform import "aws_iam_role_policy_attachment.ecs_instance_role[0]" \
@@ -959,12 +824,9 @@ jobs:
               echo "Instance Role policy attachment already exists in state or import failed, continuing..."
           fi
         fi
-        
     - name: Import ECS Cluster and Services if they exist
-      continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # Import ECS Cluster
         CLUSTER_NAME="${{ env.ECR_REPOSITORY }}-cluster"
         if aws ecs describe-clusters --clusters $CLUSTER_NAME --query 'clusters[0].clusterArn' --output text 2>/dev/null | grep -q 'arn:aws:ecs:'; then
@@ -984,7 +846,6 @@ jobs:
           else
             echo "✅ ECS Cluster is already in state"
           fi
-          
           # Import ECS Services
           SERVICES=$(aws ecs list-services --cluster $CLUSTER_NAME --query 'serviceArns[*]' --output text 2>/dev/null || echo "")
           for SERVICE_ARN in $SERVICES; do
@@ -993,17 +854,13 @@ jobs:
             terraform import "aws_ecs_service.${SERVICE_NAME//-/_}" "$CLUSTER_NAME/$SERVICE_NAME"
           done
         fi
-        
     - name: Import Route53 Private Hosted Zone if it exists
-      continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # Check if VPC ID is available
         if [ -z "$VPC_ID" ]; then
           VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
         fi
-        
         if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
           # Import Route53 Private Hosted Zone
           ZONE_NAME="${{ env.ECR_REPOSITORY }}.local"
@@ -1012,7 +869,6 @@ jobs:
             --dns-name $ZONE_NAME \
             --query 'HostedZones[?Config.PrivateZone==`true`].Id | [0]' \
             --output text 2>/dev/null | cut -d'/' -f3 || echo "")
-          
           if [ ! -z "$ZONE_ID" ] && [ "$ZONE_ID" != "None" ]; then
             # Check if the Route53 zone resource exists in the configuration
             if grep -q 'resource "aws_route53_zone" "private"' *.tf; then
@@ -1027,7 +883,6 @@ jobs:
                 fi
                 rm -f /tmp/route53_import_error
               fi
-              
               # Import VPC association if it exists in the configuration
               if grep -q 'resource "aws_route53_zone_association" "private_vpc_assoc"' *.tf; then
                 ASSOC_ID=$(aws route53 get-hosted-zone --id ${ZONE_ID#/hostedzone/} --query 'VPCs[?VPCId==`'$VPC_ID'`].VPCId' --output text 2>/dev/null || echo "")
@@ -1052,74 +907,56 @@ jobs:
             fi
           fi
         fi
-        
     - name: Import CloudWatch Log Groups if they exist
-      continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # Import application log group
         LOG_GROUP_NAME="/ecs/${{ env.ECR_REPOSITORY }}"
         if aws logs describe-log-groups --log-group-name-prefix "$LOG_GROUP_NAME" --query 'logGroups[].logGroupName' --output text | grep -q "$LOG_GROUP_NAME"; then
           echo "Importing CloudWatch Log Group: $LOG_GROUP_NAME"
           terraform import "aws_cloudwatch_log_group.app[0]" "$LOG_GROUP_NAME"
         fi
-        
-        
     - name: Show Import Status
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         echo "### Imported Resources"
         terraform state list
-        
     - name: Import Security Groups if they exist
-      continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # Get VPC ID
         VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
-        
         if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
           # Import ALB Security Group
           ALB_SG_ID=$(aws ec2 describe-security-groups \
             --filters "Name=group-name,Values=${{ env.ECR_REPOSITORY }}-alb-sg" "Name=vpc-id,Values=$VPC_ID" \
             --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
-            
           if [ ! -z "$ALB_SG_ID" ] && [ "$ALB_SG_ID" != "None" ]; then
             echo "Importing ALB Security Group"
             terraform import aws_security_group.alb $ALB_SG_ID
           fi
-          
           # Import ECS Instances Security Group
           ECS_SG_ID=$(aws ec2 describe-security-groups \
             --filters "Name=group-name,Values=${{ env.ECR_REPOSITORY }}-ecs-instances-sg" "Name=vpc-id,Values=$VPC_ID" \
             --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
-            
           if [ ! -z "$ECS_SG_ID" ] && [ "$ECS_SG_ID" != "None" ]; then
             echo "Importing ECS Instances Security Group"
             terraform import aws_security_group.ecs_instances $ECS_SG_ID
           fi
         fi
-        
     - name: Import Service Discovery Namespace if it exists
-      continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # Get the specific namespace for our application
         NAMESPACE_ID=$(aws servicediscovery list-namespaces \
           --query "Namespaces[?Name=='${{ env.ECR_REPOSITORY }}.local' && Type=='DNS_PRIVATE'].Id" \
           --output text 2>/dev/null || echo "")
-        
         if [ ! -z "$NAMESPACE_ID" ] && [ "$NAMESPACE_ID" != "None" ]; then
           # Take only the first match if multiple are returned
           NAMESPACE_ID=$(echo "$NAMESPACE_ID" | head -n1 | tr -d '[:space:]')
           echo "Importing Service Discovery Namespace: $NAMESPACE_ID"
-          
           # Get the VPC ID for the namespace association
           VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
-          
           if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
             echo "Importing with VPC association: $VPC_ID"
             terraform import "aws_service_discovery_private_dns_namespace.private" "$NAMESPACE_ID" || \
@@ -1131,20 +968,16 @@ jobs:
         else
           echo "No matching Service Discovery Namespace found to import"
         fi
-        
     - name: Show Import Status
       id: import-status
-      continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         echo "Checking Terraform state..."
-        
         # Use a temporary file to capture output and handle errors
         STATE_LIST=$(mktemp)
         if terraform state list > "$STATE_LIST" 2>&1; then
           echo "Current Terraform state:"
           cat "$STATE_LIST"
-          
           # Check if any resources are in the state
           if [ -s "$STATE_LIST" ]; then
             echo "resources_imported=true" >> $GITHUB_OUTPUT
@@ -1157,33 +990,27 @@ jobs:
           echo "⚠️ Could not list Terraform state, but continuing anyway"
           echo "resources_imported=true" >> $GITHUB_OUTPUT
         fi
-        
         # Clean up
         rm -f "$STATE_LIST"
-        
     - name: Verify Resources
       if: steps.import-status.outputs.resources_imported != 'true'
       run: |
         echo "##[error]Failed to import all required resources. Please check the logs above for errors."
         exit 1
-
   build-and-push-ecr:
     name: Build and Push to ECR
     needs: validate-terraform
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
-    
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-    
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v2
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
-
     - name: Create ECR Repository if it doesn't exist
       run: |
         # Check if repository exists
@@ -1193,16 +1020,13 @@ jobs:
         else
           echo "ECR repository already exists: ${{ env.ECR_REPOSITORY }}"
         fi
-
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
-
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
       with:
         driver: docker-container
-        
     - name: Build and push
       uses: docker/build-push-action@v5
       with:
@@ -1215,89 +1039,72 @@ jobs:
         build-args: |
           BUILDKIT_INLINE_CACHE=1
         no-cache-filters: true
-
   deploy-terraform:
     name: Deploy Terraform (Creates ECR Repo & Infrastructure)
     needs: build-and-push-ecr
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/submission/sazimtandabuzo')
     runs-on: ubuntu-latest
-    
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
       with:
         fetch-depth: 0
-    
     - name: Download Terraform state
       uses: actions/download-artifact@v3
       with:
         name: tf-state-${{ github.run_id }}
         path: ${{ env.TERRAFORM_WORKING_DIR }}/.terraform
-    
     - name: Download Terraform Plan
       uses: actions/download-artifact@v4
       with:
         name: tfplan
         path: ${{ env.TERRAFORM_WORKING_DIR }}
-    
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: ${{ env.TERRAFORM_VERSION }}
         terraform_wrapper: false
-    
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v2
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
-    
     - name: Initialize Terraform
       working-directory: ${{ env.TERRAFORM_WORKING_DIR }}
       run: |
         terraform init -input=false
-    
     - name: Import Existing Resources (if any)
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # Initialize Terraform
         terraform init -upgrade
-        
         # Function to import resource if it exists
         import_resource() {
           local resource_type=$1
           local resource_name=$2
           local resource_id=$3
-          
           if [ -z "$resource_id" ]; then
             echo "No $resource_type ID provided, skipping import"
             return 0
           fi
-          
           echo "Attempting to import $resource_type: $resource_id"
           terraform import -auto-approve "$resource_type.$resource_name" "$resource_id" 2>/dev/null || \
             echo "Failed to import $resource_type $resource_id, will create if needed"
         }
-        
         # Get AWS account ID
         ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-        
         # Import ECR repository if it exists
         ECR_REPO=$(aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} --query 'repositories[0].repositoryArn' --output text 2>/dev/null || true)
         import_resource "aws_ecr_repository.app" "app" "${ECR_REPO##*/}"
-        
         # Import IAM roles if they exist - check both naming patterns
         for role_suffix in "ecs-task-execution-role" "ecs-task-role" "ecs-instance-role"; do
           # Try both naming patterns
           for prefix in "ds-devops-app" "${{ env.ECR_REPOSITORY }}"; do
             role_name="${prefix}-${role_suffix}"
             ROLE_ARN=$(aws iam get-role --role-name "$role_name" --query 'Role.Arn' --output text 2>/dev/null || true)
-            
             if [ ! -z "$ROLE_ARN" ]; then
               echo "Found IAM role: $role_name"
-              
               # Determine the Terraform resource name based on the role suffix
               case $role_suffix in
                 "ecs-task-execution-role")
@@ -1313,10 +1120,8 @@ jobs:
                   TF_RESOURCE_NAME=$(echo "$role_suffix" | tr '-' '_')
                   ;;
               esac
-              
               # Import the role
               import_resource "aws_iam_role.$TF_RESOURCE_NAME" "$TF_RESOURCE_NAME" "$role_name"
-              
               # Import role policy attachments
               echo "Importing policies for role: $role_name"
               POLICIES=$(aws iam list-attached-role-policies --role-name "$role_name" --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null || true)
@@ -1327,33 +1132,27 @@ jobs:
                   "${TF_RESOURCE_NAME}_${POLICY_NAME}" \
                   "$role_name/$policy_arn" || true
               done
-              
               # Break after finding the first matching role name pattern
               break
             fi
           done
         done
-        
         # Import IAM policy if it exists
         POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/ds-devops-app-s3-access"
         if aws iam get-policy --policy-arn "$POLICY_ARN" >/dev/null 2>&1; then
           import_resource "aws_iam_policy.s3_access" "s3_access" "$POLICY_ARN"
         fi
-        
         # Import ECS cluster if it exists (using the correct resource name)
         ECS_CLUSTER=$(aws ecs describe-clusters --clusters "${{ env.ECR_REPOSITORY }}-cluster" --query 'clusters[0].clusterArn' --output text 2>/dev/null || echo "")
         if [ "$ECS_CLUSTER" != "None" ] && [ ! -z "$ECS_CLUSTER" ]; then
           # This is handled in the main import section, so we'll skip it here
           echo "ECS Cluster import is handled in the main import section"
         fi
-    
     - name: Terraform Initialize
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         terraform init -upgrade
-        
     - name: Import Service Discovery Namespace if it exists
-      continue-on-error: true
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         # Get VPC ID
@@ -1366,26 +1165,21 @@ jobs:
             terraform import aws_service_discovery_private_dns_namespace.private "${NAMESPACE_ID}"
           fi
         fi
-    
     - name: Terraform Apply
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # First, import any remaining resources that might have been missed
         echo "Importing any remaining resources..."
-        
         # Import ECR Repository if it exists
         if aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} > /dev/null 2>&1; then
           echo "Importing ECR repository..."
           terraform import aws_ecr_repository.app ${{ env.ECR_REPOSITORY }} || echo "ECR repository import failed or already exists"
         fi
-        
         # Import EC2 Key Pair if it exists
         if aws ec2 describe-key-pairs --key-names "${{ env.ECR_REPOSITORY }}-ec2-key" > /dev/null 2>&1; then
           echo "Importing EC2 Key Pair..."
           terraform import aws_key_pair.ec2_key_pair "${{ env.ECR_REPOSITORY }}-ec2-key" || echo "EC2 Key Pair import failed or already exists"
         fi
-        
         # Import Security Groups
         VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
         if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
@@ -1397,7 +1191,6 @@ jobs:
             echo "Importing ALB Security Group..."
             terraform import aws_security_group.alb $ALB_SG_ID || echo "ALB Security Group import failed or already exists"
           fi
-          
           # Import ECS Instances Security Group
           ECS_SG_ID=$(aws ec2 describe-security-groups \
             --filters "Name=group-name,Values=${{ env.ECR_REPOSITORY }}-ecs-instances-sg" "Name=vpc-id,Values=$VPC_ID" \
@@ -1407,35 +1200,29 @@ jobs:
             terraform import aws_security_group.ecs_instances $ECS_SG_ID || echo "ECS Instances Security Group import failed or already exists"
           fi
         fi
-        
         # Import S3 Bucket if it exists
         BUCKET_NAME="${{ env.ECR_REPOSITORY }}-analytics-data-$(aws sts get-caller-identity --query Account --output text)"
         if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
           echo "Importing S3 Bucket..."
           terraform import aws_s3_bucket.analytics_data "$BUCKET_NAME" || echo "S3 Bucket import failed or already exists"
         fi
-        
         # First, check if Service Discovery Namespace is already in the state
         if ! terraform state show "aws_service_discovery_private_dns_namespace.private" > /dev/null 2>&1; then
           # Import Service Discovery Namespace if it exists - handle multiple namespaces
           NAMESPACE_IDS=$(aws servicediscovery list-namespaces \
             --query "Namespaces[?Name=='${{ env.ECR_REPOSITORY }}.local' && Type=='DNS_PRIVATE'].Id" \
             --output text 2>/dev/null || echo "")
-            
           if [ ! -z "$NAMESPACE_IDS" ] && [ "$NAMESPACE_IDS" != "None" ]; then
             # Take only the first matching namespace
             NAMESPACE_ID=$(echo "$NAMESPACE_IDS" | head -n1 | tr -d '[:space:]')
             echo "Importing Service Discovery Namespace: $NAMESPACE_ID"
-            
             # Get the VPC ID for the namespace association
             VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.ECR_REPOSITORY }}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
-            
             # Import the namespace
             if terraform import "aws_service_discovery_private_dns_namespace.private" "$NAMESPACE_ID" 2>&1 | grep -q "Error: Cannot import non-existent remote object"; then
               echo "Namespace doesn't exist in AWS, it will be created during apply"
             elif [ $? -ne 0 ]; then
               echo "Failed to import Service Discovery Namespace, but continuing..."
-              
               # If import failed due to existing hosted zone, try to find and import it
               HOSTED_ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name "${{ env.ECR_REPOSITORY }}.local" --query 'HostedZones[?Config.PrivateZone==`true`].Id' --output text 2>/dev/null || echo "")
               if [ ! -z "$HOSTED_ZONE_ID" ] && [ "$HOSTED_ZONE_ID" != "None" ]; then
@@ -1448,7 +1235,6 @@ jobs:
         else
           echo "Service Discovery Namespace already exists in state"
         fi
-        
         echo "Running terraform apply with direct variables..."
         # Always use direct apply to avoid stale plan issues
         terraform apply -auto-approve \
@@ -1460,16 +1246,13 @@ jobs:
           -var="minio_access_key=minioadmin" \
           -var="minio_secret_key=minioadmin" \
           -var="image_tag=latest"
-
   test-deployment:
     name: Test Deployment
     needs: [deploy-terraform]
     if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/submission/sazimtandabuzo')) || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    
     outputs:
       alb_dns: ${{ steps.alb.outputs.ALB_DNS }}
-    
     steps:
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v2
@@ -1477,7 +1260,6 @@ jobs:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
-    
     - name: Get ALB DNS
       id: alb
       run: |
@@ -1486,57 +1268,45 @@ jobs:
           --query 'LoadBalancers[0].DNSName' \
           --output text)
         echo "ALB_DNS=$ALB_DNS" >> $GITHUB_OUTPUT
-    
     - name: Run Smoke Tests
       run: |
         # Wait for services to be ready
         sleep 30
-        
         # Test application endpoint (should return 200)
         curl -I http://${{ steps.alb.outputs.ALB_DNS }}:5000
-        
         # Test MinIO API (should return XML with ListAllMyBucketsResult)
         curl -s http://${{ steps.alb.outputs.ALB_DNS }}:9000
-
   cleanup-resources:
     name: Cleanup Resources
     needs: [deploy-terraform]
     if: (github.event_name == 'workflow_dispatch' || failure()) && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-      
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: ${{ env.TERRAFORM_VERSION }}
-        
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v2
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
-    
     - name: List existing resources (for debugging)
       run: |
         echo "Listing existing ECS clusters:"
         aws ecs list-clusters || echo "No ECS clusters found or error listing clusters"
-        
         echo "\nListing existing ECR repositories:"
         aws ecr describe-repositories || echo "No ECR repositories found or error listing repositories"
-        
         echo "\nListing existing ALBs:"
         aws elbv2 describe-load-balancers || echo "No ALBs found or error listing ALBs"
-    
     - name: Force Cleanup Resources
       run: |
         # Set AWS region
         export AWS_PAGER=""
         export AWS_REGION=${{ env.AWS_REGION }}
-        
         # Delete ECS Service if it exists
         echo "Deleting ECS Service if it exists..."
         aws ecs update-service \
@@ -1544,41 +1314,34 @@ jobs:
           --service ${{ env.ECR_REPOSITORY }} \
           --desired-count 0 \
           --region ${{ env.AWS_REGION }} || true
-          
         aws ecs delete-service \
           --cluster ${{ env.ECR_REPOSITORY }} \
           --service ${{ env.ECR_REPOSITORY }} \
           --region ${{ env.AWS_REGION }} || true
-        
         # Delete ECR Repository
         echo "Deleting ECR Repository..."
         aws ecr delete-repository \
           --repository-name ${{ env.ECR_REPOSITORY }} \
           --force \
           --region ${{ env.AWS_REGION }} || true
-        
         # Delete CloudWatch Log Group
         echo "Deleting CloudWatch Log Group..."
         aws logs delete-log-group \
           --log-group-name "/ecs/${{ env.ECR_REPOSITORY }}" \
           --region ${{ env.AWS_REGION }} || true
-        
         # Delete IAM Roles and Policies
         for role in "ds-devops-app-ecs-task-execution-role" "ds-devops-app-ecs-task-role" "ds-devops-app-ecs-instance-role"; do
           echo "Processing IAM Role: $role"
-          
           # Check if role exists
           if ! aws iam get-role --role-name "$role" --region "${{ env.AWS_REGION }}" >/dev/null 2>&1; then
             echo "Role $role does not exist, skipping..."
             continue
           fi
-          
           # For ECS instance role, handle instance profiles
           if [[ "$role" == *"instance-role"* ]]; then
             echo "Processing instance profile for role: $role"
             # List all instance profiles that might be using this role
             INSTANCE_PROFILES=$(aws iam list-instance-profiles-for-role --role-name "$role" --query "InstanceProfiles[*].InstanceProfileName" --output text --region "${{ env.AWS_REGION }}" 2>/dev/null || true)
-            
             for profile in $INSTANCE_PROFILES; do
               echo "Removing role from instance profile: $profile"
               # Remove the role from the instance profile
@@ -1586,7 +1349,6 @@ jobs:
                 --instance-profile-name "$profile" \
                 --role-name "$role" \
                 --region "${{ env.AWS_REGION }}" || true
-                
               # Delete the instance profile if it's no longer needed
               echo "Deleting instance profile: $profile"
               aws iam delete-instance-profile \
@@ -1594,7 +1356,6 @@ jobs:
                 --region "${{ env.AWS_REGION }}" || true
             done
           fi
-          
           # Detach all managed policies
           echo "Detaching policies from IAM Role: $role"
           for policy_arn in $(aws iam list-attached-role-policies --role-name "$role" --query "AttachedPolicies[].PolicyArn" --output text --region "${{ env.AWS_REGION }}" 2>/dev/null || true); do
@@ -1604,7 +1365,6 @@ jobs:
               --policy-arn "$policy_arn" \
               --region "${{ env.AWS_REGION }}" || true
           done
-          
           # Delete inline policies
           echo "Deleting inline policies for role: $role"
           for policy_name in $(aws iam list-role-policies --role-name "$role" --query "PolicyNames" --output text --region "${{ env.AWS_REGION }}" 2>/dev/null || true); do
@@ -1614,20 +1374,17 @@ jobs:
               --policy-name "$policy_name" \
               --region "${{ env.AWS_REGION }}" || true
           done
-          
           # Finally, delete the role
           echo "Deleting IAM Role: $role"
           aws iam delete-role \
             --role-name "$role" \
             --region "${{ env.AWS_REGION }}" || echo "Failed to delete role $role, continuing..."
         done
-        
         # Delete IAM Policy
         echo "Deleting IAM Policy..."
         aws iam delete-policy \
           --policy-arn "arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/ds-devops-app-s3-access" \
           --region ${{ env.AWS_REGION }} || true
-        
         # Run Terraform destroy as a final cleanup
         echo "Running Terraform destroy..."
         cd ${{ env.TERRAFORM_WORKING_DIR }}
@@ -1640,14 +1397,12 @@ jobs:
           -var="minio_access_key=minioadmin" \
           -var="minio_secret_key=minioadmin" \
           -var="image_tag=latest"
-
   # Store successful deployment information for rollback
   store-version:
     name: Store Version
     needs: [deploy-terraform]
     if: success() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/submission/sazimtandabuzo')
     runs-on: ubuntu-latest
-    
     steps:
     - name: Store current version
       run: |
@@ -1664,7 +1419,6 @@ jobs:
         #   --name "/${{ env.ECR_REPOSITORY }}/previous_version" \
         #   --value "${{ env.PREVIOUS_VERSION }}" \
         #   --type String --overwrite
-
   rollback:
     name: Rollback
     needs: [deploy-terraform]
@@ -1673,42 +1427,33 @@ jobs:
       (failure() && github.event_name == 'push') || 
       (github.event_name == 'workflow_dispatch' && github.event.inputs.rollback == 'true')
     runs-on: ubuntu-latest
-    
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-    
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: ${{ env.TERRAFORM_VERSION }}
-    
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v2
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
-    
     - name: Rollback to previous version
       id: rollback
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
-        
         # In a real scenario, you would fetch the previous version from your tracking system
         # PREVIOUS_VERSION=$(aws ssm get-parameter --name "/$ECR_REPOSITORY/previous_version" --query "Parameter.Value" --output text || echo "")
         # CURRENT_VERSION=$(aws ssm get-parameter --name "/$ECR_REPOSITORY/current_version" --query "Parameter.Value" --output text || echo "")
-        
         # For this example, we'll use the input parameter or environment variable
         PREVIOUS_VERSION="${PREVIOUS_VERSION:-${{ github.event.inputs.previous_version || 'none' }}"
-        
         if [ "$PREVIOUS_VERSION" == "none" ] || [ -z "$PREVIOUS_VERSION" ]; then
           echo "No previous version found for rollback"
           exit 1
         fi
-        
         echo "Rolling back to version: $PREVIOUS_VERSION"
-        
     - name: Terraform Plan - Initial
       id: plan-initial
       run: |
@@ -1717,35 +1462,27 @@ jobs:
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         terraform init -input=false
         terraform validate
-        
         # Check if we need to import any existing resources
         if ! terraform state list | grep -q 'aws_key_pair.ec2_key_pair'; then
           terraform import aws_key_pair.ec2_key_pair ${{ env.CLUSTER_NAME }}-key
         fi
-        
         # Run terraform plan and save the output
         terraform plan -out=tfplan -input=false -var="environment=${{ github.event.inputs.environment || 'production' }}"
-        
         # Set output for next steps
         echo "TF_PLAN=1" >> $GITHUB_ENV
-      
     - name: Terraform Apply
       if: github.event_name == 'push' || github.event.inputs.deploy == 'true'
       run: |
         echo "Applying Terraform changes..."
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         terraform apply -auto-approve tfplan
-        
         # For this example, we'll use the input parameter or environment variable
         PREVIOUS_VERSION="${{ github.event.inputs.previous_version || env.PREVIOUS_VERSION }}"
-        
         if [ "$PREVIOUS_VERSION" == "none" ] || [ -z "$PREVIOUS_VERSION" ]; then
           echo "No previous version found for rollback"
           exit 1
         fi
-        
         echo "Rolling back to version: $PREVIOUS_VERSION"
-        
     - name: Terraform Plan - Rollback
       id: plan-rollback
       run: |
@@ -1754,12 +1491,10 @@ jobs:
         cd terraform
         terraform init -input=false
         terraform validate
-        
         # Check if we need to import any existing resources
         if ! terraform state list | grep -q 'aws_key_pair.ec2_key_pair'; then
           terraform import aws_key_pair.ec2_key_pair ds-devops-ec2-key || true
         fi
-        
         # Run plan
         terraform plan -input=false -out=tfplan \
           -var="region=${{ env.AWS_REGION }}" \
@@ -1770,7 +1505,6 @@ jobs:
           -var="minio_access_key=minioadmin" \
           -var="minio_secret_key=minioadmin" \
           -var="image_tag=latest"
-          
         # Output plan summary
         terraform show -no-color tfplan > plan.txt
         echo "plan=$(cat plan.txt | base64 -w0)" >> $GITHUB_OUTPUT
@@ -1785,7 +1519,6 @@ jobs:
         echo "Applying Terraform changes..."
         # Add your terraform apply command here
         # terraform apply -auto-approve
-    
     - name: Print deployment status
       if: always()
       run: |
