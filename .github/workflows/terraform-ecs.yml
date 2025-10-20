@@ -1737,8 +1737,8 @@ jobs:
         
         echo "Rolling back to version: $PREVIOUS_VERSION"
         
-    - name: Terraform Plan
-      id: plan
+    - name: Terraform Plan - Initial
+      id: plan-initial
       run: |
         set -e
         # Initialize Terraform with auto-approve
@@ -1774,8 +1774,8 @@ jobs:
         
         echo "Rolling back to version: $PREVIOUS_VERSION"
         
-    - name: Terraform Plan
-      id: plan
+    - name: Terraform Plan - Rollback
+      id: plan-rollback
       run: |
         set -e
         # Initialize Terraform with auto-approve
