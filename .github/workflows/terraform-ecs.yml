@@ -1342,8 +1342,8 @@ jobs:
 
   build-and-push-ecr:
     name: Build and Push to ECR
-    needs: [validate-terraform, import-resources]  # Depend on both validation and resource import
-    if: needs.import-resources.outputs.resources_imported == 'true' || needs.import-resources.outcome == 'skipped'
+    needs: [validate-terraform, test-terraform-plan]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     
     steps:
@@ -1391,9 +1391,8 @@ jobs:
 
   deploy-terraform:
     name: Deploy Terraform (Creates ECR Repo & Infrastructure)
-    needs: [test-terraform-plan, build-and-push-ecr, setup-minio]
-    # Only run if import-resources was successful or skipped
-    if: needs.import-resources.outcome == 'success' || needs.import-resources.outcome == 'skipped'
+    needs: [test-terraform-plan, build-and-push-ecr]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     
     steps:
@@ -1637,7 +1636,8 @@ jobs:
 
   test-deployment:
     name: Test Deployment
-    needs: deploy-terraform
+    needs: [deploy-terraform]
+    if: github.event_name != 'pull_request'
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/submission/sazimtandabuzo'
     runs-on: ubuntu-latest
     
@@ -1674,8 +1674,8 @@ jobs:
 
   cleanup-resources:
     name: Cleanup Resources
-    needs: [deploy-terraform, test-deployment]
-    if: github.event_name == 'workflow_dispatch' || failure()
+    needs: [deploy-terraform]
+    if: (github.event_name == 'workflow_dispatch' || failure()) && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     
     steps:
@@ -1818,7 +1818,7 @@ jobs:
   # Store successful deployment information for rollback
   store-version:
     name: Store Version
-    needs: [deploy-terraform, test-deployment]
+    needs: [deploy-terraform]
     if: success() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     
