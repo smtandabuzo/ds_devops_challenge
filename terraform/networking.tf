@@ -182,7 +182,9 @@ locals {
     length(data.aws_route_tables.existing_public) > 0 && length(data.aws_route_tables.existing_public[0].ids) > 0 ?
     data.aws_route_tables.existing_public[0].ids[0] :
     (var.create_igw ? aws_internet_gateway.main[0].id : null)
-  ) : aws_route_table.public[0].id
+  ) : (
+    var.create_igw ? aws_route_table.public[0].id : null
+  )
 }
 
 resource "aws_security_group" "alb" {
