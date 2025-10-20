@@ -83,22 +83,24 @@ locals {
 
 # Find existing IGW if using existing VPC
 data "aws_internet_gateway" "existing" {
-  count  = var.use_existing_vpc ? 1 : 0
-  vpc_id = local.vpc_id
-
-  # This makes the data source optional
+  count = var.use_existing_vpc && var.create_igw ? 1 : 0
+  
+  filter {
+    name   = "attachment.vpc-id"
+    values = [local.vpc_id]
+  }
+  
+  # Only read the IGW if it exists, don't fail if not found
   lifecycle {
-    # If no IGW is found, this will return an empty list instead of failing
-    postcondition {
-      condition     = length(self.ids) > 0 || var.create_igw
-      error_message = "No Internet Gateway found in VPC ${local.vpc_id} and create_igw is false"
-    }
+    ignore_changes = [id]
   }
 }
 
-# Create new IGW only if not using existing one
+# Create IGW if:
+# 1. We're creating a new VPC, or
+# 2. We're using an existing VPC but want to create an IGW
 resource "aws_internet_gateway" "main" {
-  count  = var.use_existing_vpc ? 0 : 1
+  count  = (var.use_existing_vpc && var.create_igw) || !var.use_existing_vpc ? 1 : 0
   vpc_id = local.vpc_id
 
   tags = {
@@ -106,9 +108,14 @@ resource "aws_internet_gateway" "main" {
   }
 }
 
-# Use either existing or new IGW
+# Use either existing or new IGW, or none if not needed
 locals {
-  igw_id = var.use_existing_vpc ? data.aws_internet_gateway.existing[0].id : aws_internet_gateway.main[0].id
+  igw_id = var.use_existing_vpc ? (
+    var.create_igw && length(data.aws_internet_gateway.existing) > 0 ? 
+    data.aws_internet_gateway.existing[0].id : null
+  ) : (
+    length(aws_internet_gateway.main) > 0 ? aws_internet_gateway.main[0].id : null
+  )
 }
 
 # Find existing route table if using existing VPC
