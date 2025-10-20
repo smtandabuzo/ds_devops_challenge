@@ -33,8 +33,8 @@ jobs:
     
     services:
       minio:
-        # Use ECR image with proper authentication
-        image: ${{ env.ECR_REGISTRY }}/${{ env.MINIO_ECR_REPOSITORY }}:latest
+        # Using public MinIO image - will be replaced by the ECR image in the steps
+        image: minio/minio:latest
         env:
           MINIO_ROOT_USER: minioadmin
           MINIO_ROOT_PASSWORD: minioadmin
