@@ -35,7 +35,7 @@ resource "aws_vpc" "main" {
     },
     local.common_tags
   )
-  
+
   # Prevent accidental deletion
   lifecycle {
     prevent_destroy = false
@@ -135,8 +135,8 @@ locals {
       length(data.aws_internet_gateway.existing) > 0 && data.aws_internet_gateway.existing[0].id != "" ?
       data.aws_internet_gateway.existing[0].id :
       (length(aws_internet_gateway.main) > 0 ? aws_internet_gateway.main[0].id : null)
-    ) : null  # If create_igw is false, don't use any IGW
-  ) : (
+    ) : null # If create_igw is false, don't use any IGW
+    ) : (
     # For new VPCs, use the created IGW if it exists
     length(aws_internet_gateway.main) > 0 ? aws_internet_gateway.main[0].id : null
   )
@@ -179,8 +179,8 @@ resource "aws_route_table_association" "public" {
 # Use either existing or new route table ID
 locals {
   public_route_table_id = var.use_existing_vpc ? (
-    length(data.aws_route_tables.existing_public) > 0 && length(data.aws_route_tables.existing_public[0].ids) > 0 ? 
-    data.aws_route_tables.existing_public[0].ids[0] : 
+    length(data.aws_route_tables.existing_public) > 0 && length(data.aws_route_tables.existing_public[0].ids) > 0 ?
+    data.aws_route_tables.existing_public[0].ids[0] :
     (var.create_igw ? aws_internet_gateway.main[0].id : null)
   ) : aws_route_table.public[0].id
 }
@@ -224,11 +224,11 @@ resource "aws_security_group" "alb" {
     },
     local.common_tags
   )
-  
+
   # Lifecycle rules
   lifecycle {
     create_before_destroy = true
-    
+
     # Ignore changes to tags that might be managed by external tools
     ignore_changes = [
       tags,
@@ -268,14 +268,14 @@ resource "aws_security_group" "ecs_tasks" {
     },
     local.common_tags
   )
-  
+
   # Lifecycle rules
   lifecycle {
     create_before_destroy = true
-    
+
     # Prevent deletion of this security group if it's in use
-    prevent_destroy = false  # Set to true in production after initial deployment
-    
+    prevent_destroy = false # Set to true in production after initial deployment
+
     # Ignore changes to tags that might be managed by external tools
     ignore_changes = [
       tags,

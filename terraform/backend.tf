@@ -1,15 +1,15 @@
 terraform {
   backend "s3" {
-    bucket         = "ds-devops-tfstate-810772959397"
-    key            = "terraform.tfstate"
-    region = "us-east-1"
-    encrypt        = true
+    bucket  = "ds-devops-tfstate-810772959397"
+    key     = "terraform.tfstate"
+    region  = "us-east-1"
+    encrypt = true
   }
 }
 
 # Configure the MinIO provider
 provider "minio" {
-  minio_server = "minio:9000"
+  minio_server   = "minio:9000"
   minio_ssl      = false
   minio_insecure = true
   minio_user     = "minioadmin"
