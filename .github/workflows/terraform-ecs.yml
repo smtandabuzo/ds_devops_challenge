@@ -28,63 +28,11 @@ env:
   TERRAFORM_VERSION: 1.5.0
   TERRAFORM_WORKING_DIR: ./terraform
 jobs:
-  setup-minio:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Print Start Time
-      run: |
-        echo "Workflow started at: $(date)"
-
-    - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-    
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v2
-      with:
-        mask-password: true
-
-    - name: Print Workflow Info
-      run: |
-        echo "Workflow started at: $(date)"
-        echo "Workflow run ID: $GITHUB_RUN_ID"
-        
-    - name: Install MinIO client
-      run: |
-        wget https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc
-        chmod +x /usr/local/bin/mc
-    
-    - name: Configure MinIO client
-      run: |
-        # Wait for MinIO to be ready
-        until (curl -s http://localhost:9000/minio/health/live); do
-          echo "Waiting for MinIO to be ready..."
-          sleep 5
-        done
-        
-        # Configure MinIO client
-        /usr/local/bin/mc alias set myminio http://localhost:9000 minioadmin minioadmin --api s3v4
-        
-        # Create bucket if it doesn't exist
-        if ! /usr/local/bin/mc ls myminio/terraform-state >/dev/null 2>&1; then
-          echo "Creating MinIO bucket for Terraform state..."
-          /usr/local/bin/mc mb myminio/terraform-state --ignore-existing
-          /usr/local/bin/mc anonymous set download myminio/terraform-state
-        fi
-        
-        # Verify the bucket was created
-        /usr/local/bin/mc ls myminio/terraform-state || (echo "Failed to create MinIO bucket" && exit 1)
     
     # No need to define volumes at the job level in GitHub Actions
 
   validate-terraform:
     name: Validate Terraform
-    needs: setup-minio
     runs-on: ubuntu-latest
     
     steps:
@@ -155,7 +103,7 @@ jobs:
 
   test-terraform-plan:
     name: Test Terraform Plan
-    needs: [validate-terraform, setup-minio]
+    needs: validate-terraform
     runs-on: ubuntu-latest
     
     steps:
