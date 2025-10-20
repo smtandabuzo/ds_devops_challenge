@@ -24,8 +24,38 @@ env:
   TERRAFORM_WORKING_DIR: ./terraform
 
 jobs:
+  setup-minio:
+    name: Setup MinIO for Terraform State
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Install MinIO client
+      run: |
+        wget https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc
+        chmod +x /usr/local/bin/mc
+        
+    - name: Configure MinIO
+      env:
+        MINIO_ENDPOINT: http://minio:9000
+        MINIO_ACCESS_KEY: minioadmin
+        MINIO_SECRET_KEY: minioadmin
+      run: |
+        # Set up MinIO client
+        mc config host add minio $MINIO_ENDPOINT $MINIO_ACCESS_KEY $MINIO_SECRET_KEY --api s3v4
+        
+        # Create bucket if it doesn't exist
+        if ! mc ls minio/terraform-state >/dev/null 2>&1; then
+          echo "Creating MinIO bucket for Terraform state..."
+          mc mb minio/terraform-state
+          mc policy set public minio/terraform-state
+        fi
+        
+        # Verify the bucket was created
+        mc ls minio/terraform-state || (echo "Failed to create MinIO bucket" && exit 1)
+
   validate-terraform:
     name: Validate Terraform
+    needs: setup-minio
     runs-on: ubuntu-latest
     
     steps:
@@ -47,6 +77,35 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
     
+    - name: Initialize Terraform with MinIO backend
+      env:
+        MINIO_ENDPOINT: http://minio:9000
+        MINIO_ACCESS_KEY: minioadmin
+        MINIO_SECRET_KEY: minioadmin
+      run: |
+        cd ${{ env.TERRAFORM_WORKING_DIR }}
+        
+        # Create backend configuration
+        cat > backend.tf << EOF
+        terraform {
+          backend "s3" {
+            bucket                      = "terraform-state"
+            key                         = "terraform.tfstate"
+            region                      = "us-east-1"
+            endpoint                    = "$MINIO_ENDPOINT"
+            skip_region_validation      = true
+            skip_credentials_validation = true
+            skip_metadata_api_check     = true
+            force_path_style            = true
+            access_key                  = "$MINIO_ACCESS_KEY"
+            secret_key                  = "$MINIO_SECRET_KEY"
+          }
+        }
+        EOF
+        
+        # Initialize Terraform
+        terraform init -input=false
+        
     - name: Terraform Format
       id: fmt
       run: |
@@ -67,7 +126,7 @@ jobs:
 
   test-terraform-plan:
     name: Test Terraform Plan
-    needs: validate-terraform
+    needs: [validate-terraform, setup-minio]
     runs-on: ubuntu-latest
     
     steps:
@@ -1310,7 +1369,7 @@ jobs:
 
   deploy-terraform:
     name: Deploy Terraform (Creates ECR Repo & Infrastructure)
-    needs: [test-terraform-plan, build-and-push-ecr]
+    needs: [test-terraform-plan, build-and-push-ecr, setup-minio]
     # Only run if import-resources was successful or skipped
     if: needs.import-resources.outcome == 'success' || needs.import-resources.outcome == 'skipped'
     runs-on: ubuntu-latest

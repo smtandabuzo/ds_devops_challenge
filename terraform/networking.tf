@@ -29,8 +29,21 @@ resource "aws_vpc" "main" {
   enable_dns_hostnames = true
   enable_dns_support   = true
 
-  tags = {
-    Name = "${var.app_name}-vpc"
+  tags = merge(
+    {
+      Name = "${var.app_name}-vpc"
+    },
+    local.common_tags
+  )
+  
+  # Prevent accidental deletion
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      # Ignore changes to tags, e.g. because a management agent
+      # updates these based on some ruleset managed elsewhere.
+      tags,
+    ]
   }
 }
 
@@ -183,11 +196,13 @@ resource "aws_security_group" "alb" {
   description = "Allow HTTP/HTTPS traffic"
   vpc_id      = local.vpc_id
 
+  # Ingress rules
   ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow HTTP access from anywhere"
   }
 
   ingress {
@@ -195,19 +210,36 @@ resource "aws_security_group" "alb" {
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow HTTPS access from anywhere"
   }
 
+  # Egress rules
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound traffic"
   }
 
-  tags = {
-    Name        = "${var.app_name}-alb-sg"
-    Environment = var.environment
-    ManagedBy   = "Terraform"
+  # Standard tags merged with common tags
+  tags = merge(
+    {
+      Name        = "${var.app_name}-alb-sg"
+      Description = "Security group for ${var.app_name} ALB"
+    },
+    local.common_tags
+  )
+  
+  # Lifecycle rules
+  lifecycle {
+    create_before_destroy = true
+    
+    # Ignore changes to tags that might be managed by external tools
+    ignore_changes = [
+      tags,
+      description,
+    ]
   }
 }
 
@@ -216,23 +248,44 @@ resource "aws_security_group" "ecs_tasks" {
   description = "Allow inbound access from the ALB only"
   vpc_id      = local.vpc_id
 
+  # Ingress rule - only allow traffic from ALB
   ingress {
     protocol        = "tcp"
     from_port       = var.app_port
     to_port         = var.app_port
     security_groups = [aws_security_group.alb.id]
+    description     = "Allow traffic from ALB to ECS tasks"
   }
 
+  # Egress rule - allow all outbound traffic
   egress {
     protocol    = "-1"
     from_port   = 0
     to_port     = 0
     cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound traffic"
   }
 
-  tags = {
-    Name        = "${var.app_name}-ecs-tasks-sg"
-    Environment = var.environment
-    ManagedBy   = "Terraform"
+  # Standard tags merged with common tags
+  tags = merge(
+    {
+      Name        = "${var.app_name}-ecs-tasks-sg"
+      Description = "Security group for ${var.app_name} ECS tasks"
+    },
+    local.common_tags
+  )
+  
+  # Lifecycle rules
+  lifecycle {
+    create_before_destroy = true
+    
+    # Prevent deletion of this security group if it's in use
+    prevent_destroy = false  # Set to true in production after initial deployment
+    
+    # Ignore changes to tags that might be managed by external tools
+    ignore_changes = [
+      tags,
+      description,
+    ]
   }
 }
