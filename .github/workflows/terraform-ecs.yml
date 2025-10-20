@@ -43,12 +43,15 @@ jobs:
         ports:
           - 9000:9000
           - 9001:9001
-        options: >-
-          server /data --console-address ":9001"
-          --health-cmd "curl -f http://localhost:9000/minio/health/live || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 3
+        entrypoint: /bin/sh
+        args: >-
+          -c "minio server /data --console-address \":9001\""
+        healthcheck:
+          test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+          interval: 10s
+          timeout: 5s
+          retries: 3
+          start_period: 10s
         volumes:
           - minio_data:/data
     
