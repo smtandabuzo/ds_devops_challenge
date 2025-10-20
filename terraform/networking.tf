@@ -89,11 +89,6 @@ data "aws_internet_gateway" "existing" {
     name   = "attachment.vpc-id"
     values = [local.vpc_id]
   }
-  
-  # Only read the IGW if it exists, don't fail if not found
-  lifecycle {
-    ignore_changes = [id]
-  }
 }
 
 # Create IGW if:
