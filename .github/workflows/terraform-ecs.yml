@@ -608,11 +608,16 @@ jobs:
         # ECS Cluster - Skip import here as it's handled in the Import All Remaining Resources section
         # ECS Task Definitions
         for TASK_DEF in "app"; do
-          TASK_ARN=$(aws ecs list-task-definitions --family-prefix "${{ env.ECR_REPOSITORY }}-$TASK_DEF" --query 'taskDefinitionArns[0]' --output text 2>/dev/null || echo "")
-          if [ ! -z "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ]; then
-            echo "Importing ECS Task Definition: $TASK_ARN"
-            terraform import "aws_ecs_task_definition.$TASK_DEF" "$TASK_ARN" || \
-              echo "Failed to import ECS Task Definition $TASK_DEF, continuing..."
+          # Check if the task definition is already in the state
+          if ! terraform state show "aws_ecs_task_definition.$TASK_DEF" >/dev/null 2>&1; then
+            TASK_ARN=$(aws ecs list-task-definitions --family-prefix "${{ env.ECR_REPOSITORY }}-$TASK_DEF" --status ACTIVE --sort DESC --query 'taskDefinitionArns[0]' --output text 2>/dev/null || echo "")
+            if [ ! -z "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ]; then
+              echo "Importing ECS Task Definition: $TASK_ARN"
+              terraform import "aws_ecs_task_definition.$TASK_DEF" "$TASK_ARN" || \
+                echo "Failed to import ECS Task Definition $TASK_DEF, continuing..."
+            fi
+          else
+            echo "ECS Task Definition $TASK_DEF already in state, skipping import"
           fi
         done
         # 3. EC2 & Auto Scaling
