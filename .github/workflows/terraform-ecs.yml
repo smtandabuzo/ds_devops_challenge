@@ -40,6 +40,13 @@ jobs:
         terraform_version: ${{ env.TERRAFORM_VERSION }}
         terraform_wrapper: false
     
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
     - name: Terraform Format
       id: fmt
       run: |
@@ -1752,7 +1759,6 @@ jobs:
       
     - name: Terraform Apply
       if: github.event_name == 'push' || github.event.inputs.deploy == 'true'
-      needs: [plan]
       run: |
         echo "Applying Terraform changes..."
         cd ${{ env.TERRAFORM_WORKING_DIR }}
@@ -1803,7 +1809,6 @@ jobs:
         AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
     - name: Terraform Apply
       if: github.event_name == 'push' || github.event.inputs.deploy == 'true'
-      needs: [plan]
       run: |
         echo "Applying Terraform changes..."
         # Add your terraform apply command here
