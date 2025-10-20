@@ -476,6 +476,12 @@ jobs:
           -var="app_port=5000" \
           -var="app_count=2" \
           -var="image_tag=latest" \
+          -var="minio_access_key=minioadmin" \
+          -var="minio_secret_key=minioadmin" \
+          -var="use_existing_vpc=true" \
+          -var="create_igw=true" \
+          -var="vpc_cidr=10.0.0.0/16" \
+          -var='public_subnet_cidrs=["10.0.1.0/24", "10.0.2.0/24"]' \
           -out=tfplan
         # Check if there are any changes needed
         if terraform show -no-color tfplan | grep -q 'No changes.'; then
