@@ -47,8 +47,7 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-        volumes:
-          - minio_data:/data
+          --mount type=volume,src=minio_data,dst=/data
     
     steps:
     - name: Install MinIO client
@@ -77,9 +76,7 @@ jobs:
         # Verify the bucket was created
         /usr/local/bin/mc ls myminio/terraform-state || (echo "Failed to create MinIO bucket" && exit 1)
     
-    # Define volume for MinIO data
-    volumes:
-      minio_data: {}
+    # No need to define volumes at the job level in GitHub Actions
 
   validate-terraform:
     name: Validate Terraform
