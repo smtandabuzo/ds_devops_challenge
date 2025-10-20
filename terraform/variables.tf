@@ -108,8 +108,8 @@ variable "image_tag" {
   }
   
   validation {
-    condition     = var.environment != "production" || var.image_tag != "latest"
-    error_message = "The 'latest' tag should not be used in production. Please use a specific version tag."
+    condition     = var.image_tag != ""
+    error_message = "The image_tag cannot be empty."
   }
 }
 variable "use_existing_vpc" {
