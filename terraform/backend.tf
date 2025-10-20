@@ -1,22 +1,10 @@
 terraform {
   backend "s3" {
-    bucket   = "terraform-state"
-    key      = "terraform.tfstate"
-    region   = "us-east-1"
-    
-    # MinIO endpoint - uses minio service name in GitHub Actions
-    endpoint = "http://minio:9000"
-    
-    # MinIO access credentials
-    access_key = "minioadmin"
-    secret_key = "minioadmin"
-    
-    # Required for MinIO
-    skip_region_validation      = true
-    skip_credentials_validation = true
-    skip_metadata_api_check     = true
-    use_path_style              = true
-    skip_requesting_account_id  = true
+    bucket         = "ds-devops-terraform-state"
+    key            = "terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "terraform-locks"
+    encrypt        = true
   }
 }
 
