@@ -1,0 +1,64 @@
+name: Terraform State Management
+
+on:
+  workflow_call:
+    inputs:
+      terraform-version:
+        required: true
+        type: string
+      working-directory:
+        required: true
+        type: string
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+
+jobs:
+  setup-terraform:
+    name: Setup Terraform
+    runs-on: ubuntu-latest
+    outputs:
+      cache-key: ${{ steps.setup.outputs.cache-key }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Setup Terraform
+      id: setup
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        terraform_wrapper: false
+      
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION || 'us-east-1' }}
+      
+    - name: Setup Terraform Backend
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        mkdir -p .
+        cat > backend.tf << EOF
+        terraform {
+          backend "local" {}
+        }
+        EOF
+        
+    - name: Initialize Terraform
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        terraform init -input=false
+        
+    - name: Cache Terraform state
+      uses: actions/cache@v3
+      with:
+        path: ${{ inputs.working-directory }}/.terraform
+        key: ${{ github.run_id }}-terraform-state
+        restore-keys: |
+          ${{ github.run_id }}-terraform-state

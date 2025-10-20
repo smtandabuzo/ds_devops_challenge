@@ -89,26 +89,52 @@ data "aws_internet_gateway" "existing" {
     name   = "attachment.vpc-id"
     values = [local.vpc_id]
   }
+
+  # Don't fail if no IGW is found
+  lifecycle {
+    postcondition {
+      condition     = self.id != ""
+      error_message = "No Internet Gateway found in VPC ${local.vpc_id}. Set create_igw to true to create one."
+    }
+  }
 }
 
 # Create IGW if:
 # 1. We're creating a new VPC, or
-# 2. We're using an existing VPC but want to create an IGW
+# 2. We're using an existing VPC but want to create an IGW and none exists
 resource "aws_internet_gateway" "main" {
-  count  = (var.use_existing_vpc && var.create_igw) || !var.use_existing_vpc ? 1 : 0
+  count = (
+    # Create if we're creating a new VPC
+    (!var.use_existing_vpc) || 
+    # OR if we're using an existing VPC, want to create an IGW, and none was found
+    (var.use_existing_vpc && var.create_igw && 
+     (length(data.aws_internet_gateway.existing) == 0 || data.aws_internet_gateway.existing[0].id == "")
+    )
+  ) ? 1 : 0
+  
   vpc_id = local.vpc_id
 
   tags = {
     Name = "${var.app_name}-igw"
+  }
+
+  # Ensure we don't try to create if one already exists
+  lifecycle {
+    ignore_changes = [vpc_id]
   }
 }
 
 # Use either existing or new IGW, or none if not needed
 locals {
   igw_id = var.use_existing_vpc ? (
-    var.create_igw && length(data.aws_internet_gateway.existing) > 0 ?
-    data.aws_internet_gateway.existing[0].id : null
-    ) : (
+    # If using existing VPC and create_igw is true, try to use existing IGW or create a new one
+    var.create_igw ? (
+      length(data.aws_internet_gateway.existing) > 0 && data.aws_internet_gateway.existing[0].id != "" ?
+      data.aws_internet_gateway.existing[0].id :
+      (length(aws_internet_gateway.main) > 0 ? aws_internet_gateway.main[0].id : null)
+    ) : null  # If create_igw is false, don't use any IGW
+  ) : (
+    # For new VPCs, use the created IGW if it exists
     length(aws_internet_gateway.main) > 0 ? aws_internet_gateway.main[0].id : null
   )
 }

@@ -73,11 +73,14 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
     
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: ${{ env.TERRAFORM_VERSION }}
+        terraform_wrapper: false
     
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v2
@@ -85,6 +88,65 @@ jobs:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Setup Terraform Backend
+      run: |
+        mkdir -p ${{ env.TERRAFORM_WORKING_DIR }}
+        cat > ${{ env.TERRAFORM_WORKING_DIR }}/backend.tf << EOF
+        terraform {
+          backend "local" {}
+        }
+        EOF
+        
+    - name: Initialize Terraform
+      working-directory: ${{ env.TERRAFORM_WORKING_DIR }}
+      run: |
+        terraform init -input=false
+        
+    - name: Cache Terraform state
+      uses: actions/cache@v3
+      id: tf-state-cache
+      with:
+        path: ${{ env.TERRAFORM_WORKING_DIR }}/.terraform
+        key: ${{ github.run_id }}-tf-state
+        restore-keys: |
+          ${{ github.run_id }}-tf-state
+    
+    - name: Save Terraform state
+      if: always()
+      run: |
+        mkdir -p tf-state
+        cp -r ${{ env.TERRAFORM_WORKING_DIR }}/.terraform/* tf-state/ 2>/dev/null || true
+      
+    - name: Upload Terraform state
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: tf-state-${{ github.run_id }}
+        path: tf-state
+        retention-days: 1
+        
+    - name: Setup Terraform Backend
+      run: |
+        mkdir -p ${{ env.TERRAFORM_WORKING_DIR }}
+        cat > ${{ env.TERRAFORM_WORKING_DIR }}/backend.tf << EOF
+        terraform {
+          backend "local" {}
+        }
+        EOF
+        
+    - name: Initialize Terraform
+      working-directory: ${{ env.TERRAFORM_WORKING_DIR }}
+      run: |
+        terraform init -input=false
+        
+    - name: Cache Terraform state
+      uses: actions/cache@v3
+      with:
+        path: ${{ env.TERRAFORM_WORKING_DIR }}/.terraform
+        key: terraform-state-${{ github.run_id }}
+        restore-keys: |
+          terraform-state-
 
     - name: Debug AWS Configuration
       env:
@@ -114,22 +176,6 @@ jobs:
     - name: Upload Terraform Plan
       uses: actions/upload-artifact@v4
       with:
-        name: tfplan
-        path: ${{ env.TERRAFORM_WORKING_DIR }}/plan.tfplan
-        if-no-files-found: error
-
-  import-resources:
-    name: Import Existing Resources
-    needs: validate-terraform
-    runs-on: ubuntu-latest
-    outputs:
-      # These outputs will be set by the actual steps in the job
-      resources_imported: ${{ steps.init.outputs.resources_imported || 'false' }}
-      vpc_id: ${{ steps.init.outputs.vpc_id || '' }}
-      
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
       with:
         fetch-depth: 0  # Ensure full history for versioning
       
@@ -563,9 +609,13 @@ jobs:
       run: |
         cd ${{ env.TERRAFORM_WORKING_DIR }}
         
+        # Initialize Terraform
+        echo "=== Initializing Terraform ==="
+        terraform init -input=false
+
         # Show current state
         echo "=== Current Terraform State ==="
-        terraform state list
+        terraform state list || echo "No state file found, this is normal for the first run"
         
         # Run plan to verify configuration
         echo -e "\n=== Running Terraform Plan ==="
@@ -1262,6 +1312,36 @@ jobs:
     needs: [test-terraform-plan, build-and-push-ecr]
     # Only run if import-resources was successful or skipped
     if: needs.import-resources.outcome == 'success' || needs.import-resources.outcome == 'skipped'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+    
+    - name: Download Terraform state
+      uses: actions/download-artifact@v3
+      with:
+        name: tf-state-${{ github.run_id }}
+        path: ${{ env.TERRAFORM_WORKING_DIR }}/.terraform
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TERRAFORM_VERSION }}
+        terraform_wrapper: false
+    
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Initialize Terraform
+      working-directory: ${{ env.TERRAFORM_WORKING_DIR }}
+      run: |
+        terraform init -input=false
     runs-on: ubuntu-latest
     
     steps:
