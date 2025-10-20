@@ -98,22 +98,20 @@ variable "minio_secret_key" {
 }
 
 variable "image_tag" {
-  description = "Docker image tag"
+  description = "Docker image tag to deploy"
   type        = string
-  default     = "latest"
-  
+  default     = "v1.0.0"  # Default to a specific version
+
   validation {
     condition     = can(regex("^[a-zA-Z0-9_.-]+$", var.image_tag))
     error_message = "The image_tag can only contain alphanumeric characters, dots, underscores, and hyphens."
   }
   
-  # Prevent using 'latest' tag in production
   validation {
     condition     = var.environment != "production" || var.image_tag != "latest"
     error_message = "The 'latest' tag should not be used in production. Please use a specific version tag."
   }
 }
-
 variable "use_existing_vpc" {
   description = "Whether to use an existing VPC or create a new one"
   type        = bool

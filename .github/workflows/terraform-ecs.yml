@@ -148,56 +148,78 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
     
-    - name: Setup Terraform Backend
+    - name: Configure MinIO Backend
       run: |
         mkdir -p ${{ env.TERRAFORM_WORKING_DIR }}
-        cat > ${{ env.TERRAFORM_WORKING_DIR }}/backend.tf << EOF
+        cat > ${{ env.TERRAFORM_WORKING_DIR }}/backend.tf << 'EOF'
         terraform {
-          backend "local" {}
+          backend "s3" {
+            bucket   = "terraform-state"
+            key      = "terraform.tfstate"
+            region   = "us-east-1"
+            endpoint = "http://minio:9000"
+            access_key = "minioadmin"
+            secret_key = "minioadmin"
+            skip_region_validation      = true
+            skip_credentials_validation = true
+            skip_metadata_api_check     = true
+            use_path_style              = true
+            skip_requesting_account_id  = true
+          }
+        }
+        
+        # Configure the MinIO provider
+        provider "minio" {
+          minio_server   = "minio:9000"
+          minio_ssl      = false
+          minio_insecure = true
+          minio_user     = "minioadmin"
+          minio_password = "minioadmin"
+        }
+        
+        # Create the bucket for Terraform state
+        resource "minio_s3_bucket" "terraform_state" {
+          bucket = "terraform-state"
+          acl    = "private"
+        }
+        
+        # Enable versioning for the bucket
+        resource "minio_s3_bucket_versioning" "versioning" {
+          bucket = minio_s3_bucket.terraform_state.bucket
+          versioning_configuration {
+            status = "Enabled"
+          }
         }
         EOF
         
-    - name: Initialize Terraform
-      working-directory: ${{ env.TERRAFORM_WORKING_DIR }}
+    - name: Wait for MinIO to be ready
       run: |
-        terraform init -input=false
-        
-    - name: Cache Terraform state
-      uses: actions/cache@v3
-      id: tf-state-cache
-      with:
-        path: ${{ env.TERRAFORM_WORKING_DIR }}/.terraform
-        key: ${{ github.run_id }}-tf-state
-        restore-keys: |
-          ${{ github.run_id }}-tf-state
-    
-    - name: Save Terraform state
-      if: always()
-      run: |
-        mkdir -p tf-state
-        cp -r ${{ env.TERRAFORM_WORKING_DIR }}/.terraform/* tf-state/ 2>/dev/null || true
+        until curl -s http://minio:9000/minio/health/live; do
+          echo "Waiting for MinIO to be ready..."
+          sleep 5
+        done
+      timeout-minutes: 2
       
-    - name: Upload Terraform state
-      if: always()
-      uses: actions/upload-artifact@v3
-      with:
-        name: tf-state-${{ github.run_id }}
-        path: tf-state
-        retention-days: 1
-        
-    - name: Setup Terraform Backend
-      run: |
-        mkdir -p ${{ env.TERRAFORM_WORKING_DIR }}
-        cat > ${{ env.TERRAFORM_WORKING_DIR }}/backend.tf << EOF
-        terraform {
-          backend "local" {}
-        }
-        EOF
-        
-    - name: Initialize Terraform
+    - name: Initialize Terraform with MinIO
       working-directory: ${{ env.TERRAFORM_WORKING_DIR }}
       run: |
-        terraform init -input=false
+        terraform init -reconfigure
+        
+    - name: Create MinIO bucket if not exists
+      run: |
+        # Install MinIO client
+        wget https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc
+        chmod +x /usr/local/bin/mc
+        
+        # Configure MinIO client
+        mc config host add minio http://minio:9000 minioadmin minioadmin --api s3v4
+        
+        # Create bucket if it doesn't exist
+        if ! mc ls minio/terraform-state >/dev/null 2>&1; then
+          echo "Creating MinIO bucket for Terraform state..."
+          mc mb minio/terraform-state
+          mc policy set public minio/terraform-state
+        fi
         
     - name: Cache Terraform state
       uses: actions/cache@v3

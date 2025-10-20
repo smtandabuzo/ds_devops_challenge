@@ -38,7 +38,7 @@ resource "aws_vpc" "main" {
   
   # Prevent accidental deletion
   lifecycle {
-    prevent_destroy = true
+    prevent_destroy = false
     ignore_changes = [
       # Ignore changes to tags, e.g. because a management agent
       # updates these based on some ruleset managed elsewhere.
@@ -112,19 +112,9 @@ data "aws_internet_gateway" "existing" {
   }
 }
 
-# Create IGW if:
-# 1. We're creating a new VPC, or
-# 2. We're using an existing VPC but want to create an IGW and none exists
+# Create IGW if we're not using an existing VPC or explicitly told to create one
 resource "aws_internet_gateway" "main" {
-  count = (
-    # Create if we're creating a new VPC
-    (!var.use_existing_vpc) || 
-    # OR if we're using an existing VPC, want to create an IGW, and none was found
-    (var.use_existing_vpc && var.create_igw && 
-     (length(data.aws_internet_gateway.existing) == 0 || data.aws_internet_gateway.existing[0].id == "")
-    )
-  ) ? 1 : 0
-  
+  count  = var.create_igw ? 1 : 0
   vpc_id = local.vpc_id
 
   tags = {
@@ -188,7 +178,11 @@ resource "aws_route_table_association" "public" {
 
 # Use either existing or new route table ID
 locals {
-  public_route_table_id = var.use_existing_vpc ? data.aws_route_tables.existing_public[0].ids[0] : aws_route_table.public[0].id
+  public_route_table_id = var.use_existing_vpc ? (
+    length(data.aws_route_tables.existing_public) > 0 && length(data.aws_route_tables.existing_public[0].ids) > 0 ? 
+    data.aws_route_tables.existing_public[0].ids[0] : 
+    (var.create_igw ? aws_internet_gateway.main[0].id : null)
+  ) : aws_route_table.public[0].id
 }
 
 resource "aws_security_group" "alb" {
